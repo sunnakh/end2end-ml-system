@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+
+pr_content/
+data/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.env
