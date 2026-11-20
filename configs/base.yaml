@@ -1,0 +1,26 @@
+# Shared settings. Environment files (local.yaml, cloud.yaml) override these.
+paths:
+  raw_dir: data/raw/olist
+  data_root: data/lake
+
+replay:
+  start: 2016-09-04
+  end: 2018-10-17
+
+pii:
+  salt_env: LATE_DELIVERY_PII_SALT
+
+validation:
+  max_quarantine_rate: 0.05
+  min_rows_for_breaker: 100
+
+faults:
+  enabled: false
+  seed: 0
+  rate: 0.01
+
+drift:
+  reference_start: 2017-06-01
+  reference_end: 2017-08-31
+  window_days: 7      # compare the trailing week, not a single noisy day
+  min_rows: 200       # below this, report "too_few_orders" instead of a PSI
