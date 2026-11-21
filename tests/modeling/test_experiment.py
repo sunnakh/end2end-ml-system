@@ -84,17 +84,56 @@ def test_slices_undelivered_and_leakage(first: tuple[ExperimentResult, Path]) ->
     )
 
 
-def test_champion_written_only_on_pass_and_used_next_run(
-    first: tuple[ExperimentResult, Path],
-) -> None:
+def test_champion_written_and_used_next_run(first: tuple[ExperimentResult, Path]) -> None:
     result, models = first
+    assert result.gate.passed  # the synthetic signal is strong: the challenger must pass
     champ = read_champion(models)
-    assert (champ is not None) == result.gate.passed
-    if champ is None:
-        pytest.skip("synthetic challenger did not pass; nothing to compare against")
-    assert (models / champ.gate_model_path).exists() and (models / champ.model_path).exists()
+    assert champ is not None
+    # The gate model is the train-only fit; the served model is the refit, a different file.
+    assert date.fromisoformat(champ.gate_train_end) < CFG.valid_start
+    gate_bytes = (models / champ.gate_model_path).read_bytes()
+    assert gate_bytes != (models / champ.model_path).read_bytes()
+    assert "seller_prior_median_handling_h" in champ.features
     second = run_experiment(CFG, _load, models, run_id="r2", git_commit="abc", grid=GRID)
     assert "beats champion" in [c.name for c in second.gate.checks]
+
+
+def test_champion_that_saw_validation_is_refused(tmp_path: Path) -> None:
+    run_experiment(CFG, _load, tmp_path, run_id="r1", git_commit="abc", grid=GRID)
+    later = CFG.model_copy(update={"valid_start": date(2018, 3, 1)})  # now overlaps r1's train
+    with pytest.raises(ValueError, match="trained on rows up to"):
+        run_experiment(later, _load, tmp_path, run_id="r2", git_commit="abc", grid=GRID)
+
+
+def test_champion_missing_features_is_refused(tmp_path: Path) -> None:
+    import json
+
+    run_experiment(CFG, _load, tmp_path, run_id="r1", git_commit="abc", grid=GRID)
+    path = tmp_path / "champion.json"
+    data = json.loads(path.read_text())
+    data["features"] = [*data["features"], "feature_from_the_future"]
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="feature_from_the_future"):
+        run_experiment(CFG, _load, tmp_path, run_id="r2", git_commit="abc", grid=GRID)
+
+
+def test_calibration_trial_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import late_delivery.modeling.experiment as experiment
+
+    monkeypatch.setattr(experiment, "CALIBRATION_ECE", -1.0)  # force a trial
+    r = run_experiment(CFG, _load, tmp_path, run_id="r1", git_commit="abc", grid=GRID)
+    assert r.calibration["tried"] is True
+    assert {"base_ece", "calibrated_ece", "base_recall_at_k", "calibrated_recall_at_k",
+            "kept"} <= set(r.calibration)  # fmt: skip
+
+
+def test_extra_outputs(first: tuple[ExperimentResult, Path]) -> None:
+    r = first[0]
+    assert "roc_auc" in r.monthly.columns and "roc_auc" in r.candidates.columns
+    assert {"candidates", "gate", "test", "total"} <= set(r.timings)
+    assert {"time_late_rate", "random_late_rate", "time_pr_auc_lift",
+            "random_pr_auc_lift"} <= set(r.leakage)  # fmt: skip
+    assert r.calibration["tried"] in (True, False)
 
 
 def test_reruns_are_identical(first: tuple[ExperimentResult, Path], tmp_path: Path) -> None:

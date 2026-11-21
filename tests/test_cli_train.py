@@ -20,6 +20,7 @@ def test_train_wires_snapshots_experiment_and_report(
         path = tmp_path / f"snap-{cutoff}"
         path.mkdir(exist_ok=True)
         pl.DataFrame({"order_id": ["a"]}).write_parquet(path / "part-0.parquet")
+        (path / "_meta.json").write_text('{"excluded_not_yet_due": 7}')
         return PartitionInfo(path=str(path), rows=1, content_hash=f"h{cutoff}")
 
     seen: dict[str, Any] = {}
@@ -42,6 +43,7 @@ def test_train_wires_snapshots_experiment_and_report(
     assert built == [date(2018, 6, 1)]
     assert seen["snap"].content_hash == "h2018-06-01"
     assert seen["snap"].frame["order_id"].to_list() == ["a"]
+    assert seen["snap"].meta == {"excluded_not_yet_due": 7}
     assert seen["run_id"] == "r9"
     assert seen["models_dir"] == tmp_path / "models"
     assert seen["out_dir"] == tmp_path / "models" / "runs" / "r9"

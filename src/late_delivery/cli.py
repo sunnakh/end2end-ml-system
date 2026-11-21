@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import logging
 import subprocess
 import sys
@@ -104,7 +105,9 @@ def train(settings: Settings, run_id: str | None, models_dir: Path | None) -> bo
     def load_snapshot(cutoff: date) -> Snapshot:
         info = build_training_set(settings, cutoff)
         frame = pl.read_parquet(f"{info.path}/part-0.parquet")
-        return Snapshot(frame=frame, content_hash=info.content_hash)
+        meta_path = Path(info.path) / "_meta.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        return Snapshot(frame=frame, content_hash=info.content_hash, meta=meta)
 
     commit = git_commit()
     run_id = run_id or default_run_id(commit)

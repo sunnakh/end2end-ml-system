@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -103,8 +104,8 @@ def test_small_slice_ignored_and_no_late_slice_skipped() -> None:
         _frame(worse_north, days=29), {"rule": _frame(_rate(30), days=29)},
         cfg=CFG, train_late_rate=0.1,
     )  # fmt: skip
-    names = [c.name for c in r.checks]
-    assert "slice region=North" not in names  # 10 x 29 = 290 rows, below the 300 minimum
+    north = next(c for c in r.checks if c.name == "slice region=North")
+    assert north.passed is None and "290 orders" in north.detail  # named, not judged
     assert _check(r, "slice region=Center-West") is None  # no late orders: cannot judge
 
 
@@ -121,6 +122,7 @@ def test_champion_round_trip(tmp_path: Path) -> None:
     c = Champion(
         run_id="r1", model_path="runs/r1/model.pkl", gate_model_path="runs/r1/gate_model.pkl",
         snapshot_hashes={"decision": "abc"}, valid_metrics={"recall_at_k": 0.25},
+        gate_train_end="2018-03-31", features=["a", "b"],
     )  # fmt: skip
     write_champion(tmp_path, c)
     assert read_champion(tmp_path) == c
@@ -134,3 +136,20 @@ def test_corrupt_champion_raises(tmp_path: Path) -> None:
     (tmp_path / "champion.json").write_text('{"run_id": "r1"}')
     with pytest.raises(ValueError, match="champion.json"):
         read_champion(tmp_path)
+
+
+def test_champion_from_before_training_window_record_is_rejected(tmp_path: Path) -> None:
+    old = {"run_id": "r0", "model_path": "m", "gate_model_path": "g",
+           "snapshot_hashes": {}, "valid_metrics": {}}  # fmt: skip
+    (tmp_path / "champion.json").write_text(json.dumps(old))
+    with pytest.raises(ValueError, match="champion.json"):
+        read_champion(tmp_path)
+
+
+def test_no_late_orders_in_validation_fails_with_a_clear_reason() -> None:
+    none_late = _frame(_rate(40)).with_columns(pl.lit(0).alias("late"))
+    rule = _frame(_rate(30)).with_columns(pl.lit(0).alias("late"))
+    r = run_gate(none_late, {"rule": rule}, cfg=CFG, train_late_rate=0.1)
+    check = next(c for c in r.checks if c.name == "beats rule")
+    assert check.passed is False
+    assert "no late orders" in check.detail and "nan" not in check.detail

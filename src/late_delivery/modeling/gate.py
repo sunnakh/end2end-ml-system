@@ -44,6 +44,11 @@ def recall_at_k(df: pl.DataFrame) -> float:
 def _beats(
     name: str, challenger: pl.DataFrame, ref: pl.DataFrame, cfg: TrainingConfig
 ) -> GateCheck:
+    if int(challenger["late"].sum()) == 0:
+        return GateCheck(
+            f"beats {name}", False,
+            "validation has no late orders: recall@K is undefined, so no improvement can be shown",
+        )  # fmt: skip
     diff, lo, hi = paired_day_bootstrap(
         challenger, ref, recall_at_k, n=cfg.bootstrap_resamples, seed=cfg.seed
     )
@@ -62,8 +67,12 @@ def _slices(challenger: pl.DataFrame, ref: pl.DataFrame, ref_name: str,
     for kind in SLICE_TYPES:
         for value in sorted(challenger[kind].unique().to_list()):
             c = challenger.filter(pl.col(kind) == value)
-            if c.height < cfg.gate.min_slice_rows:
-                continue  # too few orders to judge fairly
+            if c.height < cfg.gate.min_slice_rows:  # too few orders to judge fairly
+                checks.append(GateCheck(
+                    f"slice {kind}={value}", None,
+                    f"{c.height} orders < {cfg.gate.min_slice_rows}: not judged",
+                ))  # fmt: skip
+                continue
             r = ref.filter(pl.col(kind) == value)
             name = f"slice {kind}={value}"
             rc, rr = recall_at_k(c), recall_at_k(r)
@@ -120,6 +129,8 @@ class Champion:
     gate_model_path: str  # train only: what future challengers are compared against
     snapshot_hashes: dict[str, str]
     valid_metrics: dict[str, float]
+    gate_train_end: str  # last handoff date the gate model trained on (ISO)
+    features: list[str]  # columns the gate model needs
 
 
 def read_champion(models_dir: Path) -> Champion | None:

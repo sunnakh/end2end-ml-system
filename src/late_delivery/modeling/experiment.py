@@ -8,6 +8,7 @@ Test months are scored after every choice is fixed and never feed back.
 from __future__ import annotations
 
 import itertools
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -18,6 +19,7 @@ import numpy as np
 import polars as pl
 
 from late_delivery.config import TrainingConfig
+from late_delivery.features import FEATURE_COLUMNS
 from late_delivery.modeling.bootstrap import day_bootstrap
 from late_delivery.modeling.contact import decision_metrics, select_contacts
 from late_delivery.modeling.gate import (
@@ -35,6 +37,7 @@ from late_delivery.modeling.metrics import (
     ece,
     pr_points,
     reliability_bins,
+    roc_auc,
 )
 from late_delivery.modeling.models import (
     LightGBMModel,
@@ -66,6 +69,7 @@ class Grid:
 class Snapshot:
     frame: pl.DataFrame  # gold/training rows, incl. late_without_delivery
     content_hash: str
+    meta: dict[str, Any] = field(default_factory=dict)  # the snapshot's _meta.json
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,9 @@ class ExperimentResult:
     curves: dict[str, pl.DataFrame]
     fits: pl.DataFrame
     champion_written: bool
+    calibration: dict[str, Any] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict)
+    snapshot_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class _Run:
@@ -142,10 +149,30 @@ class _Run:
             decided, budget_share=c.budget_share, contact_cost=c.contact_cost, late_cost=c.late_cost
         )
         y, s = decided["late"].to_numpy(), decided["score"].to_numpy()
-        m["pr_auc"] = average_precision(y, np.where(np.isfinite(s), s, -1e18))
+        finite = np.where(np.isfinite(s), s, -1e18)
+        m["pr_auc"] = average_precision(y, finite)
+        m["roc_auc"] = roc_auc(y, finite)
         m["brier"] = brier(y, s) if probabilities else float("nan")
         m["ece"] = ece(y, s) if probabilities else float("nan")
         return m
+
+
+def _check_champion_usable(champion: Champion, cfg: TrainingConfig, df: pl.DataFrame) -> None:
+    """Refuse a champion the gate cannot judge fairly: one whose gate model trained on rows
+    inside the current validation months (it would score its own training data), or one
+    that needs columns the snapshot no longer has."""
+    if date.fromisoformat(champion.gate_train_end) >= cfg.valid_start:
+        raise ValueError(
+            f"champion {champion.run_id} was trained on rows up to {champion.gate_train_end}, "
+            f"inside the validation period starting {cfg.valid_start}: comparing on validation "
+            "would favour it. Retire it (move champion.json aside) or restore the earlier dates."
+        )
+    missing = [f for f in champion.features if f not in df.columns]
+    if missing:
+        raise ValueError(
+            f"champion {champion.run_id} needs features the snapshot lacks: {missing}. "
+            "Rebuild the snapshot with them, or retire the champion."
+        )
 
 
 def _month_start(d: date) -> date:
@@ -175,6 +202,15 @@ def run_experiment(
 ) -> ExperimentResult:
     grid = grid or Grid()
     run = _Run(cfg)
+    clock = time.perf_counter()
+    started, timings = clock, {}
+
+    def lap(stage: str) -> None:
+        nonlocal clock
+        now = time.perf_counter()
+        timings[stage] = round(now - clock, 2)
+        clock = now
+
     test_end = cfg.test_end + timedelta(days=1)  # exclusive
 
     decision = load_snapshot(cfg.test_start)
@@ -204,13 +240,25 @@ def run_experiment(
     spec, model, chosen_valid, chosen_train = fitted[(best["model"], best["window_months"])]
     window = int(best["window_months"])
 
-    # 2. Calibration, only if the chosen model's probabilities are clearly off.
+    lap("candidates")
+
+    # 2. Calibration, only if the chosen model's probabilities are clearly off. Both
+    #    versions are reported whenever it is tried.
+    calibration: dict[str, Any] = {"tried": False, "base_ece": best["ece"],
+                                   "threshold_ece": CALIBRATION_ECE}  # fmt: skip
     if best["ece"] > CALIBRATION_ECE:
         cal_spec = Spec(spec.kind, spec.params, calibrated=True)
         cal = run.fit(cal_spec.build(cfg.seed), chosen_train, "calibration", cfg.test_start)
         cal_valid = run.decide(cal, valid)
         cm = run.metrics(cal_valid, probabilities=True)
-        if cm["recall_at_k"] >= best["recall_at_k"] and cm["ece"] < best["ece"]:
+        kept = cm["recall_at_k"] >= best["recall_at_k"] and cm["ece"] < best["ece"]
+        calibration.update({
+            "tried": True, "kept": kept,
+            "base_recall_at_k": best["recall_at_k"], "calibrated_recall_at_k": cm["recall_at_k"],
+            "calibrated_ece": cm["ece"], "base_pr_auc": best["pr_auc"],
+            "calibrated_pr_auc": cm["pr_auc"],
+        })  # fmt: skip
+        if kept:
             spec, model, chosen_valid = cal_spec, cal, cal_valid
 
     # 3. Gate on validation: vs the rule, vs the champion's train-only model, and the
@@ -220,6 +268,7 @@ def run_experiment(
     references = {"rule": rule_valid}
     champion = read_champion(models_dir)
     if champion is not None:
+        _check_champion_usable(champion, cfg, df)
         references["champion"] = run.decide(
             load_model(models_dir / champion.gate_model_path), valid
         )
@@ -230,6 +279,8 @@ def run_experiment(
         run.decide(weak, valid), {"rule": rule_valid, "champion": chosen_valid},
         cfg=cfg, train_late_rate=train_late_rate,
     )  # fmt: skip
+
+    lap("gate")
 
     # 4. Refit on train + validation (same window length), score the test months.
     refit_train = between(df, months_back(cfg.test_start, window), cfg.test_start)
@@ -244,6 +295,8 @@ def run_experiment(
         wf_train = between(snap, months_back(month, window), month)
         wf = run.fit(spec.build(cfg.seed), wf_train, "walk_forward", month, month)
         walk.append(run.decide(wf, between(test, month, _next_month(month))))
+
+    lap("test")
 
     # 6. Monthly table.
     ev_counts = dict(ev.group_by("month").len().iter_rows())
@@ -311,10 +364,15 @@ def run_experiment(
     )
     rand_m = run.metrics(run.decide(rand, pool.filter(pl.Series(~in_train))), probabilities=True)
     chosen_m = run.metrics(chosen_valid, probabilities=True)
+    # PR-AUC rises with the late rate itself, so each is also shown divided by its late rate.
     leakage = {
         "time_pr_auc": chosen_m["pr_auc"], "random_pr_auc": rand_m["pr_auc"],
         "time_recall_at_k": chosen_m["recall_at_k"], "random_recall_at_k": rand_m["recall_at_k"],
+        "time_late_rate": chosen_m["late_rate"], "random_late_rate": rand_m["late_rate"],
+        "time_pr_auc_lift": chosen_m["pr_auc"] / chosen_m["late_rate"],
+        "random_pr_auc_lift": rand_m["pr_auc"] / rand_m["late_rate"],
     }  # fmt: skip
+    lap("diagnostics")
 
     # 9. Keep the champion only if the gate passed.
     if gate.passed:
@@ -332,9 +390,12 @@ def run_experiment(
                     "evaluation": evaluation.content_hash,
                 },  # fmt: skip
                 valid_metrics={k: float(v) for k, v in chosen_m.items()},
+                gate_train_end=chosen_train["handoff_date"].max().isoformat(),  # type: ignore[union-attr]
+                features=list(FEATURE_COLUMNS),
             ),
         )
 
+    timings["total"] = round(time.perf_counter() - started, 2)
     return ExperimentResult(
         run_id=run_id,
         git_commit=git_commit,
@@ -362,4 +423,7 @@ def run_experiment(
         curves=curves,
         fits=pl.DataFrame(run.fit_rows),
         champion_written=gate.passed,
+        calibration=calibration,
+        timings=timings,
+        snapshot_meta={"decision": decision.meta, "evaluation": evaluation.meta},
     )
