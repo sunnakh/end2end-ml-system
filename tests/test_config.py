@@ -75,3 +75,9 @@ def test_training_rejects_unknown_key(tmp_path: Path) -> None:
 def test_training_defaults_without_yaml_block(tmp_path: Path) -> None:
     s = load_settings("local", _write(tmp_path, BASE, ""))
     assert s.training.test_start == date(2018, 6, 1)
+
+
+def test_training_windows_need_two_months(tmp_path: Path) -> None:
+    d = _write(tmp_path, BASE, "training:\n  window_months: [9, 1]\n")
+    with pytest.raises(ValidationError):
+        load_settings("local", d)

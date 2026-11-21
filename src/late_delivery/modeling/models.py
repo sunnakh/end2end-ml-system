@@ -104,8 +104,9 @@ _LGB_CATEGORICAL = ["customer_state", "main_payment_type"]
 
 
 class LightGBMModel:
-    """Gradient boosting. Early stopping uses the last calendar month of the training rows,
-    never validation, so validation stays an honest judge of the chosen settings."""
+    """Gradient boosting. The number of trees is chosen by early stopping on the last
+    calendar month of the training rows (never validation); the final trees are then grown
+    on every training row, so the newest month is learned from too."""
 
     name = "lightgbm"
     uses_threshold = True
@@ -120,6 +121,8 @@ class LightGBMModel:
         self.min_child_samples = min_child_samples
         self.seed = seed
         self.best_iteration = 0
+        self.features: list[str] = []  # fixed at fit time: later code may add features
+        self._fitted_rows = 0
         self._stop_month = ""
         self._levels: dict[str, list[str]] = {}
         self._booster: lgb.Booster | None = None
@@ -132,11 +135,17 @@ class LightGBMModel:
             "min_child_samples": self.min_child_samples,
             "best_iteration": self.best_iteration,
             "early_stopping_month": self._stop_month,
+            "fitted_rows": self._fitted_rows,
         }
+
+    @property
+    def num_trees(self) -> int:
+        assert self._booster is not None, "fit first"
+        return int(self._booster.num_trees())
 
     def _matrix(self, df: pl.DataFrame) -> np.ndarray:
         cols = []
-        for f in FEATURE_COLUMNS:
+        for f in self.features:
             if f in _LGB_CATEGORICAL:
                 codes = {lvl: i for i, lvl in enumerate(self._levels[f])}
                 # Unseen or missing levels get -1, which LightGBM treats as missing.
@@ -147,6 +156,7 @@ class LightGBMModel:
         return np.column_stack(cols)
 
     def fit(self, train: pl.DataFrame) -> None:
+        self.features = list(FEATURE_COLUMNS)
         self._levels = {
             f: sorted(train[f].cast(pl.String).drop_nulls().unique().to_list())
             for f in _LGB_CATEGORICAL
@@ -163,33 +173,33 @@ class LightGBMModel:
             "num_threads": 1,
             "verbose": -1,
         }
-        cat_idx = [FEATURE_COLUMNS.index(f) for f in _LGB_CATEGORICAL]
-        has_stop = early.height > 0 and stop.height > 0
-        fit_rows = early if has_stop else train
-        dtrain = lgb.Dataset(
-            self._matrix(fit_rows),
-            fit_rows["late"].to_numpy(),
-            categorical_feature=cat_idx,
-            free_raw_data=False,
-        )
-        if has_stop:
-            dvalid = lgb.Dataset(self._matrix(stop), stop["late"].to_numpy(), reference=dtrain)
-            self._booster = lgb.train(
-                params,
-                dtrain,
-                num_boost_round=self.max_rounds,
-                valid_sets=[dvalid],
+        cat_idx = [self.features.index(f) for f in _LGB_CATEGORICAL]
+
+        def dataset(rows: pl.DataFrame, reference: lgb.Dataset | None = None) -> lgb.Dataset:
+            return lgb.Dataset(
+                self._matrix(rows), rows["late"].to_numpy(), categorical_feature=cat_idx,
+                reference=reference, free_raw_data=False,
+            )  # fmt: skip
+
+        if early.height > 0 and stop.height > 0:
+            # 1. Choose the number of trees on the last month, trained on the months before.
+            d_early = dataset(early)
+            probe = lgb.train(
+                params, d_early, num_boost_round=self.max_rounds,
+                valid_sets=[dataset(stop, reference=d_early)],
                 callbacks=[lgb.early_stopping(self.patience, verbose=False)],
-            )
-            self.best_iteration = self._booster.best_iteration
+            )  # fmt: skip
+            self.best_iteration = max(int(probe.best_iteration), 1)
         else:  # a single month of data: no tail to stop on, use a fixed small budget
-            self._booster = lgb.train(params, dtrain, num_boost_round=200)
             self.best_iteration = 200
             self._stop_month = ""
+        # 2. Grow that many trees on every training row, newest month included.
+        self._booster = lgb.train(params, dataset(train), num_boost_round=self.best_iteration)
+        self._fitted_rows = train.height
 
     def score(self, df: pl.DataFrame) -> np.ndarray:
         assert self._booster is not None, "fit first"
-        out = self._booster.predict(self._matrix(df), num_iteration=self.best_iteration)
+        out = self._booster.predict(self._matrix(df))
         return np.asarray(out, dtype=np.float64)
 
 
@@ -216,6 +226,8 @@ class PlattCalibrated:
 
     def fit(self, train: pl.DataFrame) -> None:
         early, last, _ = _last_month_split(train)
+        if early.height == 0:
+            raise ValueError("Platt calibration needs at least two months of training rows")
         self.base.fit(early)
         z = self._logit(self.base.score(last))[:, None]
         w, b = fit_logreg(z, last["late"].to_numpy().astype(np.float64), l2=1e-6)

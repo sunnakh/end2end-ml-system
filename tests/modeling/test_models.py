@@ -109,3 +109,34 @@ def test_save_load_round_trip(tmp_path: Path, model: object) -> None:
     save_model(model, tmp_path / "m.pkl")  # type: ignore[arg-type]
     again = load_model(tmp_path / "m.pkl")
     assert np.array_equal(again.score(HELD), model.score(HELD))  # type: ignore[attr-defined]
+
+
+def test_lightgbm_keeps_its_own_feature_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import late_delivery.modeling.models as models_module
+
+    m = LightGBMModel(num_leaves=15, learning_rate=0.1, min_child_samples=20)
+    m.fit(TRAIN)
+    before = m.score(HELD)
+    save_model(m, tmp_path / "m.pkl")
+    # A later code version adds a feature (and reorders): the saved model must not change.
+    newer = ["brand_new_feature", *reversed(models_module.FEATURE_COLUMNS)]
+    monkeypatch.setattr(models_module, "FEATURE_COLUMNS", newer)
+    again = load_model(tmp_path / "m.pkl")
+    assert np.array_equal(again.score(HELD), before)
+    assert again.features == list(reversed(newer[1:]))  # type: ignore[attr-defined]
+
+
+def test_lightgbm_final_trees_use_every_training_row() -> None:
+    m = LightGBMModel(num_leaves=15, learning_rate=0.1, min_child_samples=20)
+    m.fit(TRAIN)
+    assert m.params["fitted_rows"] == TRAIN.height  # last month is in the trees too
+    assert m.params["early_stopping_month"] == "2018-03"
+    assert m.num_trees == m.best_iteration
+
+
+def test_platt_needs_more_than_one_month() -> None:
+    one_month = TRAIN.filter(pl.col("handoff_date") >= date(2018, 3, 1))
+    with pytest.raises(ValueError, match="at least two months"):
+        PlattCalibrated(LogRegModel(l2=1e-3)).fit(one_month)

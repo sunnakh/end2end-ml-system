@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,7 +61,10 @@ class TrainingConfig(_Strict):
     test_start: date = date(2018, 6, 1)
     test_end: date = date(2018, 8, 31)  # inclusive
     evaluation_cutoff: date = date(2018, 10, 17)  # test labels, once they have resolved
-    window_months: list[int] = Field(default_factory=lambda: [15, 9, 6], min_length=1)
+    # At least 2 months: early stopping and calibration hold out the last month of a window.
+    window_months: list[Annotated[int, Field(ge=2)]] = Field(
+        default_factory=lambda: [15, 9, 6], min_length=1
+    )
     # Daily contact decision (simulated costs, see design 03).
     budget_share: float = Field(default=0.05, gt=0.0, le=1.0)
     min_score: float = Field(default=0.10, ge=0.0, le=1.0)
