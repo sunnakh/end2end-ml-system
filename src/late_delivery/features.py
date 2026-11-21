@@ -32,6 +32,7 @@ FEATURE_COLUMNS: list[str] = [
     "handoff_month",
     "seller_prior_orders",
     "seller_prior_late_rate",
+    "seller_prior_median_handling_h",
 ]
 
 _EARTH_RADIUS_KM = 6371.0
@@ -114,6 +115,45 @@ def _seller_history(
         pl.col("_n").fill_null(0).alias("prior_orders"),
         (pl.col("_n_late") / pl.col("_n")).alias("prior_late_rate"),
     )
+
+
+def _seller_handling_history(
+    order_sellers: pl.DataFrame, all_items: pl.DataFrame, changelog: pl.DataFrame
+) -> pl.DataFrame:
+    """Per (order, seller): median handling time over the seller's handoffs strictly before
+    this order's handoff. Handoff times are known at handoff, so no outcome leaks in."""
+    handoffs = (
+        changelog.filter(pl.col("_change_type") == "shipped")
+        .select(
+            "order_id",
+            pl.col(HANDOFF).alias("_handoff_ts"),
+            _hours(HANDOFF, pl.coalesce(APPROVED, PURCHASE)).alias("_handling_h"),
+        )
+        .drop_nulls()
+        .unique("order_id", keep="first")
+        .join(all_items.select("order_id", "seller_id").unique(), on="order_id")
+        .sort("_handoff_ts")
+    )
+    # Expanding median per seller, including the row itself; the as-of join below then
+    # takes the value from the seller's last handoff strictly before the scored order's.
+    window = max(handoffs.height, 1)
+    hist = handoffs.with_columns(
+        pl.col("_handling_h")
+        .rolling_median(window_size=window, min_samples=1)
+        .over("seller_id")
+        .alias("_median_h")
+    ).select("seller_id", "_handoff_ts", "_median_h")
+    current = order_sellers.select("order_id", "seller_id", HANDOFF).unique().sort(HANDOFF)
+    joined = current.join_asof(
+        hist,
+        left_on=HANDOFF,
+        right_on="_handoff_ts",
+        by="seller_id",
+        strategy="backward",
+        allow_exact_matches=False,
+        check_sortedness=False,  # both sides sorted globally by their time key above
+    )
+    return joined.select("order_id", "seller_id", pl.col("_median_h").alias("prior_median_h"))
 
 
 def build_features(
@@ -209,6 +249,13 @@ def build_features(
         .agg(
             pl.col("prior_orders").max().alias("seller_prior_orders"),
             pl.col("prior_late_rate").max().alias("seller_prior_late_rate"),
+        )
+        .join(
+            _seller_handling_history(order_sellers, items, deliveries)
+            .group_by("order_id")
+            .agg(pl.col("prior_median_h").max().alias("seller_prior_median_handling_h")),
+            on="order_id",
+            how="left",
         )
     )
 
