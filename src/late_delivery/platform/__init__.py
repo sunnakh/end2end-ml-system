@@ -1,1 +1,1 @@
-"""Generic ML-pipeline building blocks; extracted to ml-platform-kit later."""
+"""Generic pipeline building blocks: storage, validation, PII, drift, runner, manifest."""

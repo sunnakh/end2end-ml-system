@@ -67,7 +67,7 @@ all other steps are independent per `ds`.
 
 ```text
 src/late_delivery/
-├── platform/              # generic building blocks → ml-platform-kit (Task 17)
+├── platform/              # generic building blocks (no Olist-specific logic)
 │   ├── storage.py         # partitioned Parquet, atomic writes, content hashes
 │   ├── validation.py      # Contract shape, validate(), quarantine reason codes
 │   ├── pii.py             # salted hashing, salt fingerprint guard
@@ -87,10 +87,7 @@ configs/                   # base.yaml, local.yaml
 tests/                     # mirrors src: platform/, source/, steps/, plus end-to-end
 ```
 
-`platform/` must not depend on Olist-specific code. One coupling remains:
-the pipeline runner and manifest take this project's `Settings`; extraction
-(Task 17) replaces that with a small generic settings interface.
-
-Package name `late_delivery` is a proposal; the platform pieces (runner,
-validation/quarantine, storage, manifest) move to `ml-platform-kit` at the end
-of M2.
+`platform/` holds the plumbing that does not depend on the Olist problem
+(storage, validation, PII, drift, runner, manifest); everything about this
+dataset lives in `source/`, `steps/` and `features.py`. One coupling remains:
+the pipeline runner and manifest read this project's `Settings`.
