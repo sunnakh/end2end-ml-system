@@ -1,17 +1,22 @@
-"""Command line entry point: backfill, rerun, single steps and training snapshots."""
+"""Command line entry point: backfill, rerun, single steps, training snapshots and training."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import logging
+import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
+import polars as pl
+
 from late_delivery.config import Settings, load_settings
 from late_delivery.dag import DOWNSTREAM_OF_HISTORY, STEPS
+from late_delivery.modeling.experiment import Snapshot, run_experiment
+from late_delivery.modeling.report import write_report
 from late_delivery.platform.pipeline.manifest import write_manifest
 from late_delivery.platform.pipeline.runner import new_context, run_steps
 from late_delivery.platform.storage import list_partitions
@@ -74,6 +79,47 @@ def _date(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def git_commit() -> str:
+    """Short commit of the checkout, marked "-dirty" if there are uncommitted changes."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return f"{sha}-dirty" if dirty else sha
+
+
+def default_run_id(commit: str) -> str:
+    return f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{commit}"
+
+
+def train(settings: Settings, run_id: str | None, models_dir: Path | None) -> bool:
+    """Builds the snapshots the experiment asks for, runs it and writes the report."""
+
+    def load_snapshot(cutoff: date) -> Snapshot:
+        info = build_training_set(settings, cutoff)
+        frame = pl.read_parquet(f"{info.path}/part-0.parquet")
+        return Snapshot(frame=frame, content_hash=info.content_hash)
+
+    commit = git_commit()
+    run_id = run_id or default_run_id(commit)
+    root = models_dir or Path(settings.training.models_dir)
+    result = run_experiment(
+        settings.training, load_snapshot, root, run_id=run_id, git_commit=commit
+    )
+    out_dir = root / "runs" / run_id
+    write_report(result, settings.training, out_dir)
+    status = "PASSED (champion updated)" if result.gate.passed else "BLOCKED (champion kept)"
+    print(f"run {run_id}: {result.chosen['model']} — gate {status}")
+    print(f"report: {out_dir / 'report.md'}")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="late-delivery")
     parser.add_argument("--env", default="local")
@@ -89,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ds", type=_date, required=True)
     p = sub.add_parser("training-set", help="build a labeled training snapshot")
     p.add_argument("--cutoff", type=_date, required=True)
+    p = sub.add_parser("train", help="train, evaluate, gate and report (M3)")
+    p.add_argument("--run-id")
+    p.add_argument("--models-dir", type=Path, help="defaults to training.models_dir")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -101,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         ok = rerun(settings, args.ds)
     elif args.command == "run-step":
         ok = run_step(settings, args.step, args.ds)
+    elif args.command == "train":
+        ok = train(settings, args.run_id, args.models_dir)
     else:
         info = build_training_set(settings, args.cutoff)
         print(f"{info.path} rows={info.rows} hash={info.content_hash}")
