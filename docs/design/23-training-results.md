@@ -88,7 +88,8 @@ The flag costs nothing on validation beyond noise and fixes the August failure
 
 **Rerunning the normal experiment with the flag** (all choices still on
 validation) picks LightGBM (15 leaves, learning rate 0.03, 15-month window,
-validation recall@K 0.262); the gate passes at +0.076 vs the rule. Post-hoc test:
+validation recall@K 0.262). It beats the rule by +0.076, but the gate blocks it
+(see below). Post-hoc test:
 
 | Month | Model | Rule | Walk-forward |
 | --- | --- | --- | --- |
@@ -101,6 +102,19 @@ The choice among the top candidates is still fragile: they sit within noise on
 validation, and the flag's small dip in logistic regression's recall flipped the
 winner to LightGBM, which handles the step natively. Validation still cannot
 show how a candidate behaves under the new promise policy.
+
+**Official run with the flag:** `20261121T110611Z-f0e249b` (`make train`,
+commit `f0e249b`, same snapshots) reproduces the numbers above. Gate:
+**blocked** on "beats champion": recall@K 0.262 vs the champion's 0.266, a
+difference of −0.004 (95% CI −0.026 to +0.021) where +0.020 with the interval
+above 0 is required. Every other check passed (rule +0.076, all slices,
+calibration), and the calendar-only model was blocked as well.
+
+The champion therefore stays the logistic regression without the flag, the
+model that loses August to the rule (0.186 vs 0.250). The gate followed its
+rules: it judges on April–May only, and those months cannot show the policy
+change. The gate is not loosened after seeing this result; promotion is
+handled as a recorded decision (see [Open items](09-open-items.md)).
 
 ## Fixed during the whole-branch review
 

@@ -61,3 +61,22 @@ steps natively, which is why LightGBM did well in August.
 Fix: a 0/1 "under 5 days left" flag next to `remaining_days` for logistic
 regression (threshold read from training alone). Results in
 [Results on real data](23-training-results.md#august-check-post-hoc).
+
+## Open in M4: promoting the August fix
+
+The official run with the flag (`20261121T110611Z-f0e249b`) was blocked on
+"beats champion": on April–May it ties the current champion (−0.004), so the
+champion stays the model that loses August to the rule. Validation cannot see
+the policy change, so the gate cannot settle this.
+
+Decision: the gate is not loosened and `champion.json` is not edited by hand.
+M4 adds a manual promotion, built with the model registry:
+
+- `promote <run_id> --reason "…"`: refused unless the run exists, its model
+  loads, its snapshots match, and it passed every gate check except "beats
+  champion"; a reason is required.
+- The champion record keeps `promoted_by: manual`, the reason, the previous
+  champion and the time; every change of champion, automatic or manual, is
+  appended to a promotions log.
+- Candidate reason for this run: the post-hoc August check (0.394 vs 0.186),
+  labelled post-hoc.

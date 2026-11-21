@@ -39,3 +39,12 @@ those weeks. The required margin and interval limit the effect; the candidates
 are close to each other, so it is small. Test months were never used for any
 choice: the report headlines them as the real performance and labels the
 validation gate numbers as optimistic.
+
+## Known limitation: the gate cannot see a policy change
+
+The gate judges only the validation months. A champion picked under an old
+policy can only be replaced by beating it on those old-policy months, so when
+the business changes, a model that is better under the new policy can be
+blocked. This happened with the August fix (see
+[Results on real data](23-training-results.md#august-check-post-hoc)). The
+way out is a recorded human decision (manual promotion, M4), not a lower bar.
