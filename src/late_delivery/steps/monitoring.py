@@ -36,13 +36,22 @@ def _scoring_between(ctx: Context, start: date, end: date) -> pl.DataFrame | Non
 def drift_scores(
     reference: pl.DataFrame | None, window: pl.DataFrame | None, min_rows: int
 ) -> tuple[dict[str, float | None], str]:
-    """PSI per non-calendar feature, and a status: ok, too_few_orders or no_reference."""
+    """PSI per non-calendar feature, and a status: ok, too_few_orders or no_reference.
+
+    A feature absent from either side (e.g. added after the reference period was built)
+    gets None instead of failing the whole report.
+    """
     empty: dict[str, float | None] = {col: None for col in DRIFT_FEATURES}
     if reference is None or reference.height == 0:
         return empty, "no_reference"
     if window is None or window.height < max(min_rows, 1):
         return empty, "too_few_orders"
-    return {col: psi(reference[col], window[col]) for col in DRIFT_FEATURES}, "ok"
+    return {
+        col: psi(reference[col], window[col])
+        if col in reference.columns and col in window.columns
+        else None
+        for col in DRIFT_FEATURES
+    }, "ok"
 
 
 def drift_report(ctx: Context) -> None:
@@ -51,7 +60,13 @@ def drift_report(ctx: Context) -> None:
     current = read_partition(ctx.root, "gold", "scoring", ctx.ds)
     window_start = ctx.ds - timedelta(days=cfg.window_days - 1)
     window = _scoring_between(ctx, window_start, ctx.ds)
-    reference = _scoring_between(ctx, cfg.reference_start, cfg.reference_end)
+    # The reference exists only once its period is over: reading it earlier would look into
+    # the future, and the report would depend on which later days were already processed.
+    reference = (
+        _scoring_between(ctx, cfg.reference_start, cfg.reference_end)
+        if ctx.ds > cfg.reference_end
+        else None
+    )
     scores, status = drift_scores(reference, window, cfg.min_rows)
     quarantine: dict[str, dict[str, float | int]] = {}
     for table in TABLE_ORDER:
