@@ -65,3 +65,11 @@ def test_constant_column_does_not_divide_by_zero() -> None:
     df = _df(["SP"] * 50, [5.0] * 50, [True] * 50)
     x = DesignMatrix(FEATS).fit(df).transform(df)
     assert np.isfinite(x).all()
+
+
+def test_only_categorical_features() -> None:
+    df = pl.DataFrame({"handoff_weekday": [1, 2] * 40, "handoff_month": [3] * 80})
+    dm = DesignMatrix(["handoff_weekday", "handoff_month"]).fit(df)
+    x = dm.transform(df)
+    assert x.shape == (80, len(dm.feature_names))
+    assert np.isfinite(x).all()

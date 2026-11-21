@@ -51,9 +51,9 @@ class DesignMatrix:
             counts = df[f].cast(pl.String).value_counts()
             keep = counts.filter(pl.col("count") >= self.rare_min_count)[f].drop_nulls()
             self.levels_[f] = sorted(keep.to_list())
-        filled = self._filled(raw)
-        self.center_ = filled.mean(axis=0)
-        std = filled.std(axis=0)
+        filled = self._filled(raw, df.height)
+        self.center_ = filled.mean(axis=0) if filled.shape[1] else np.zeros(0)
+        std = filled.std(axis=0) if filled.shape[1] else np.zeros(0)
         self.scale_ = np.where(std > 0, std, 1.0)  # a constant column stays 0 after centring
         self.feature_names = (
             list(self.numeric_names)
@@ -62,13 +62,14 @@ class DesignMatrix:
         )
         return self
 
-    def _filled(self, raw: pl.DataFrame) -> np.ndarray:
+    def _filled(self, raw: pl.DataFrame, n_rows: int) -> np.ndarray:
         cols = [raw[f].fill_null(self.medians_[f]).to_numpy() for f in self.numeric_names]
-        return np.column_stack(cols) if cols else np.zeros((raw.height, 0))
+        # An empty select has height 0, so the row count comes from the source frame.
+        return np.column_stack(cols) if cols else np.zeros((n_rows, 0))
 
     def transform(self, df: pl.DataFrame) -> np.ndarray:
         raw = self._numeric_raw(df)
-        numeric = (self._filled(raw) - self.center_) / self.scale_
+        numeric = (self._filled(raw, df.height) - self.center_) / self.scale_
         missing = [raw[f].is_null().cast(pl.Float64).to_numpy() for f in self.with_missing_]
         onehot = []
         for f in self.categorical:
