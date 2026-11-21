@@ -80,3 +80,14 @@ def ece(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> float:
     n = bins["n"].to_numpy().astype(np.float64)
     gap = np.abs(bins["mean_pred"].to_numpy() - bins["frac_late"].to_numpy())
     return float((gap * n).sum() / n.sum())
+
+
+def pr_points(y: np.ndarray, s: np.ndarray) -> pl.DataFrame:
+    """Precision and recall at every distinct score threshold, for plotting."""
+    y = np.asarray(y)
+    order = np.argsort(-np.asarray(s, dtype=np.float64), kind="mergesort")
+    s_sorted, tp = np.asarray(s)[order], np.cumsum(y[order])
+    last = np.r_[s_sorted[1:] != s_sorted[:-1], True]
+    seen = np.arange(1, len(y) + 1)[last]
+    n_pos = max(int(y.sum()), 1)
+    return pl.DataFrame({"precision": tp[last] / seen, "recall": tp[last] / n_pos})

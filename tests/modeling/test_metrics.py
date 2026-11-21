@@ -57,3 +57,17 @@ def test_ece_of_overconfident_scores() -> None:
     p = np.full(100, 0.5)
     y = np.array([1] * 10 + [0] * 90)
     assert ece(y, p, n_bins=1) == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize("case", range(6))
+def test_pr_points_match_sklearn(case: int) -> None:
+    from sklearn.metrics import precision_recall_curve
+
+    from late_delivery.modeling.metrics import pr_points
+
+    y, s = _cases()[case]
+    pts = pr_points(y, s)
+    p, r, _ = precision_recall_curve(y, s)
+    # sklearn lists points from high threshold to low with a final (1, 0) anchor reversed
+    assert np.allclose(sorted(zip(pts["recall"], pts["precision"], strict=True)),
+                       sorted(zip(r[:-1], p[:-1], strict=True)))  # fmt: skip
