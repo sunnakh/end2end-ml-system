@@ -64,6 +64,15 @@ def brier(y: np.ndarray, p: np.ndarray) -> float:
 def reliability_bins(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> pl.DataFrame:
     """Equal-count bins by predicted probability: mean prediction vs observed late share."""
     p = np.asarray(p, dtype=np.float64)
+    if len(p) == 0:
+        return pl.DataFrame(
+            schema={
+                "bin": pl.Int64,
+                "mean_pred": pl.Float64,
+                "frac_late": pl.Float64,
+                "n": pl.Int64,
+            }
+        )
     order = np.argsort(p, kind="mergesort")
     chunks = np.array_split(order, n_bins)
     rows = [
@@ -77,6 +86,8 @@ def reliability_bins(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> pl.DataF
 def ece(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> float:
     """Expected calibration error: row-weighted mean |mean prediction - late share| per bin."""
     bins = reliability_bins(y, p, n_bins)
+    if bins.height == 0:
+        return float("nan")
     n = bins["n"].to_numpy().astype(np.float64)
     gap = np.abs(bins["mean_pred"].to_numpy() - bins["frac_late"].to_numpy())
     return float((gap * n).sum() / n.sum())

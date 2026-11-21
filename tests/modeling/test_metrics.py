@@ -71,3 +71,12 @@ def test_pr_points_match_sklearn(case: int) -> None:
     # sklearn lists points from high threshold to low with a final (1, 0) anchor reversed
     assert np.allclose(sorted(zip(pts["recall"], pts["precision"], strict=True)),
                        sorted(zip(r[:-1], p[:-1], strict=True)))  # fmt: skip
+
+
+def test_calibration_of_empty_input_is_nan_without_warning() -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert np.isnan(ece(np.array([]), np.array([])))
+        assert reliability_bins(np.array([]), np.array([])).height == 0
