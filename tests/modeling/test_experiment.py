@@ -117,23 +117,12 @@ def test_champion_missing_features_is_refused(tmp_path: Path) -> None:
         run_experiment(CFG, _load, tmp_path, run_id="r2", git_commit="abc", grid=GRID)
 
 
-def test_calibration_trial_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import late_delivery.modeling.experiment as experiment
-
-    monkeypatch.setattr(experiment, "CALIBRATION_ECE", -1.0)  # force a trial
-    r = run_experiment(CFG, _load, tmp_path, run_id="r1", git_commit="abc", grid=GRID)
-    assert r.calibration["tried"] is True
-    assert {"base_ece", "calibrated_ece", "base_recall_at_k", "calibrated_recall_at_k",
-            "kept"} <= set(r.calibration)  # fmt: skip
-
-
 def test_extra_outputs(first: tuple[ExperimentResult, Path]) -> None:
     r = first[0]
     assert "roc_auc" in r.monthly.columns and "roc_auc" in r.candidates.columns
     assert {"candidates", "gate", "test", "total"} <= set(r.timings)
     assert {"time_late_rate", "random_late_rate", "time_pr_auc_lift",
             "random_pr_auc_lift"} <= set(r.leakage)  # fmt: skip
-    assert r.calibration["tried"] in (True, False)
 
 
 def test_reruns_are_identical(first: tuple[ExperimentResult, Path], tmp_path: Path) -> None:

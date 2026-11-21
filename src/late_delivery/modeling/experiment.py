@@ -43,7 +43,6 @@ from late_delivery.modeling.models import (
     LightGBMModel,
     LogRegModel,
     Model,
-    PlattCalibrated,
     RuleBaseline,
     calendar_only,
     load_model,
@@ -51,12 +50,13 @@ from late_delivery.modeling.models import (
 )
 from late_delivery.modeling.splits import between, months_back, prepare
 
-CALIBRATION_ECE = 0.02  # above this validation ECE, a Platt-calibrated version is tried
-
 
 def _default_lgbm() -> list[dict[str, float]]:
-    grid = itertools.product([15, 31, 63], [0.03, 0.1], [20, 100])
-    return [{"num_leaves": nl, "learning_rate": lr, "min_child_samples": mc} for nl, lr, mc in grid]
+    # Small on purpose: on validation the top settings sit within noise of each other.
+    return [
+        {"num_leaves": nl, "learning_rate": lr, "min_child_samples": 100}
+        for nl, lr in itertools.product([15, 31], [0.03, 0.1])
+    ]
 
 
 @dataclass(frozen=True)
@@ -78,24 +78,20 @@ class Spec:
 
     kind: str  # "logreg" | "lightgbm"
     params: dict[str, float]
-    calibrated: bool = False
 
     def build(self, seed: int) -> Model:
-        base: Model
         if self.kind == "logreg":
-            base = LogRegModel(l2=self.params["l2"])
-        else:
-            base = LightGBMModel(
-                num_leaves=int(self.params["num_leaves"]),
-                learning_rate=self.params["learning_rate"],
-                min_child_samples=int(self.params["min_child_samples"]),
-                seed=seed,
-            )
-        return PlattCalibrated(base) if self.calibrated else base
+            return LogRegModel(l2=self.params["l2"])
+        return LightGBMModel(
+            num_leaves=int(self.params["num_leaves"]),
+            learning_rate=self.params["learning_rate"],
+            min_child_samples=int(self.params["min_child_samples"]),
+            seed=seed,
+        )
 
     def label(self) -> str:
         p = ", ".join(f"{k}={v:g}" for k, v in sorted(self.params.items()))
-        return f"{self.kind}({p}){' + platt' if self.calibrated else ''}"
+        return f"{self.kind}({p})"
 
 
 @dataclass
@@ -115,7 +111,6 @@ class ExperimentResult:
     curves: dict[str, pl.DataFrame]
     fits: pl.DataFrame
     champion_written: bool
-    calibration: dict[str, Any] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict)
     snapshot_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -242,26 +237,7 @@ def run_experiment(
 
     lap("candidates")
 
-    # 2. Calibration, only if the chosen model's probabilities are clearly off. Both
-    #    versions are reported whenever it is tried.
-    calibration: dict[str, Any] = {"tried": False, "base_ece": best["ece"],
-                                   "threshold_ece": CALIBRATION_ECE}  # fmt: skip
-    if best["ece"] > CALIBRATION_ECE:
-        cal_spec = Spec(spec.kind, spec.params, calibrated=True)
-        cal = run.fit(cal_spec.build(cfg.seed), chosen_train, "calibration", cfg.test_start)
-        cal_valid = run.decide(cal, valid)
-        cm = run.metrics(cal_valid, probabilities=True)
-        kept = cm["recall_at_k"] >= best["recall_at_k"] and cm["ece"] < best["ece"]
-        calibration.update({
-            "tried": True, "kept": kept,
-            "base_recall_at_k": best["recall_at_k"], "calibrated_recall_at_k": cm["recall_at_k"],
-            "calibrated_ece": cm["ece"], "base_pr_auc": best["pr_auc"],
-            "calibrated_pr_auc": cm["pr_auc"],
-        })  # fmt: skip
-        if kept:
-            spec, model, chosen_valid = cal_spec, cal, cal_valid
-
-    # 3. Gate on validation: vs the rule, vs the champion's train-only model, and the
+    # 2. Gate on validation: vs the rule, vs the champion's train-only model, and the
     #    deliberately weak calendar-only model, which must be blocked.
     rule = RuleBaseline()
     rule_valid = run.decide(rule, valid)
@@ -282,13 +258,13 @@ def run_experiment(
 
     lap("gate")
 
-    # 4. Refit on train + validation (same window length), score the test months.
+    # 3. Refit on train + validation (same window length), score the test months.
     refit_train = between(df, months_back(cfg.test_start, window), cfg.test_start)
     final = run.fit(spec.build(cfg.seed), refit_train, "refit", cfg.test_start)
     chosen_test = run.decide(final, test)
     rule_test = run.decide(rule, test)
 
-    # 5. Walk-forward: retrain before each later test month on what was known then.
+    # 4. Walk-forward: retrain before each later test month on what was known then.
     walk = []
     for month in _months(cfg.test_start, test_end)[1:]:
         snap = prepare(load_snapshot(month).frame)
@@ -298,7 +274,7 @@ def run_experiment(
 
     lap("test")
 
-    # 6. Monthly table.
+    # 5. Monthly table.
     ev_counts = dict(ev.group_by("month").len().iter_rows())
     monthly_rows = []
 
@@ -321,7 +297,7 @@ def run_experiment(
         add_months("test", "walk_forward", part, True)
     monthly = pl.DataFrame(monthly_rows).sort(["model", "month"])
 
-    # 7. Slices, undelivered and curves.
+    # 6. Slices, undelivered and curves.
     slice_rows = []
     for split, frames in (
         ("validation", (rule_valid, chosen_valid)),
@@ -355,7 +331,7 @@ def run_experiment(
         curves[f"reliability_{split}"] = reliability_bins(y, s)
         curves[f"pr_{split}"] = pr_points(y, s)
 
-    # 8. Leakage demonstration: the same rows, split at random instead of by time.
+    # 7. Leakage demonstration: the same rows, split at random instead of by time.
     pool = between(df, months_back(cfg.valid_start, window), cfg.test_start)
     rng = np.random.default_rng(cfg.seed)
     in_train = rng.random(pool.height) < 0.8
@@ -374,7 +350,7 @@ def run_experiment(
     }  # fmt: skip
     lap("diagnostics")
 
-    # 9. Keep the champion only if the gate passed.
+    # 8. Keep the champion only if the gate passed.
     if gate.passed:
         run_dir = Path("runs") / run_id
         save_model(model, models_dir / run_dir / "gate_model.pkl")
@@ -411,7 +387,6 @@ def run_experiment(
             "model": spec.label(),
             "kind": spec.kind,
             "window_months": window,
-            "calibrated": spec.calibrated,
             "params": model.params,
         },  # fmt: skip
         gate=gate,
@@ -423,7 +398,6 @@ def run_experiment(
         curves=curves,
         fits=pl.DataFrame(run.fit_rows),
         champion_written=gate.passed,
-        calibration=calibration,
         timings=timings,
         snapshot_meta={"decision": decision.meta, "evaluation": evaluation.meta},
     )

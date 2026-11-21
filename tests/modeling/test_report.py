@@ -8,10 +8,7 @@ from late_delivery.modeling.experiment import ExperimentResult, run_experiment
 from late_delivery.modeling.report import write_report
 from tests.modeling.test_experiment import CFG, GRID, _load
 
-SECTIONS = [
-    "## Run", "## Decision", "## Validation candidates", "## Month by month", "## Slices",
-    "## Never-delivered orders", "## Leakage check", "## Notes",
-]  # fmt: skip
+SECTIONS = ["## Run", "## Decision", "## Month by month", "## Leakage check", "## Notes"]
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +88,6 @@ def test_no_hardcoded_findings_or_dates(written: tuple[ExperimentResult, Path]) 
 def test_new_columns_and_sections(written: tuple[ExperimentResult, Path]) -> None:
     text = (written[1] / "report.md").read_text()
     assert "ROC-AUC" in text
-    assert "Calibration:" in text
     run = json.loads((written[1] / "run.json").read_text())
     assert run["timings"]["total"] > 0
 

@@ -45,8 +45,9 @@ comparisons use the paired difference on the same resampled days.
 
 Written for every run to `data/models/runs/<run_id>/`:
 
-- `report.md`: what was trained, on which snapshots, the tables above, the gate
-  decision and its reasons.
-- `metrics.json`: every number in the report, machine-readable.
+- `report.md`: what was trained, on which snapshots, the gate decision and its
+  reasons, the month-by-month tables, the leakage check and notes.
+- `metrics.json`: every number, including the full candidate list, slices and
+  never-delivered results that the report only points to.
 - `reliability.png`, `pr_curve.png`: calibration and PR curves on validation and test.
 - `run.json`: snapshot hashes, config, git commit, seed, timings.

@@ -36,17 +36,19 @@ From the [framing](01-framing.md):
   on the last month of the window (never validation); the final trees are then
   grown on **every** training row with that count, so the newest month is learned
   from too. The model stores the feature list it was fitted with.
-- Tuned on validation from a small grid: number of leaves, learning rate,
-  minimum child samples.
+- Tuned on validation from a small grid: 15 or 31 leaves, learning rate 0.03
+  or 0.1, minimum child samples 100 (the top settings sit within noise of each
+  other, so a larger grid adds time, not information).
 - Class weights off: the decision needs calibrated probabilities for the 0.10
   threshold.
 
 ## Calibration
 
-The 0.10 threshold assumes calibrated scores. Brier score and a reliability
-curve are reported for each model on validation and test. If a model is clearly
-miscalibrated on validation, Platt scaling is fitted on the last month of the
-training window (not on validation) and both versions are reported.
+The 0.10 threshold assumes calibrated scores. Brier score, calibration error and
+a reliability curve are reported on validation and test, and the gate blocks a
+model whose Brier score is worse than a constant guess. There is no separate
+calibration step: Platt scaling was built and tried, made results worse (the last
+training month, March 2018, is atypical) and was removed.
 
 ## Chosen model
 

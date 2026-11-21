@@ -126,23 +126,6 @@ def _excluded_line(meta: dict[str, dict[str, Any]]) -> str:
     return f"- Label maturity: {'; '.join(parts)}." if parts else ""
 
 
-def _calibration_line(cal: dict[str, Any]) -> str:
-    if not cal:
-        return ""
-    if not cal.get("tried"):
-        return (
-            f"Calibration: not tried (validation ECE {_fmt(cal.get('base_ece'))} "
-            f"<= {cal.get('threshold_ece', 0):.2f})."
-        )
-    verdict = "kept" if cal["kept"] else "not kept"
-    return (
-        f"Calibration: Platt tried and {verdict}: ECE {_fmt(cal['base_ece'])} -> "
-        f"{_fmt(cal['calibrated_ece'])}, recall@K {_fmt(cal['base_recall_at_k'])} -> "
-        f"{_fmt(cal['calibrated_recall_at_k'])}, PR-AUC {_fmt(cal['base_pr_auc'])} -> "
-        f"{_fmt(cal['calibrated_pr_auc'])}."
-    )
-
-
 def _budget_note(monthly: pl.DataFrame, cfg: TrainingConfig) -> str:
     """Where a month's late rate is below the budget share, part of the budget must go to
     on-time orders; say how the 0.10 minimum score dealt with that, from the numbers."""
@@ -190,105 +173,59 @@ def _plots(result: ExperimentResult, out: Path) -> None:
 
 
 def write_report(result: ExperimentResult, cfg: TrainingConfig, out_dir: Path) -> None:
+    """report.md holds the decision and the month-by-month results; every other table
+    (all candidates, slices, never-delivered orders) is in metrics.json."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    r = result
+    r, m, lk = result, result.monthly, result.leakage
     metrics = {
         "chosen": r.chosen, "counts": r.counts, "gate": _gate_json(r.gate),
         "calendar_gate": _gate_json(r.calendar_gate), "candidates": _rows(r.candidates),
-        "monthly": _rows(r.monthly), "slices": _rows(r.slices),
-        "undelivered": _rows(r.undelivered), "leakage": r.leakage,
+        "monthly": _rows(m), "slices": _rows(r.slices),
+        "undelivered": _rows(r.undelivered), "leakage": lk,
     }  # fmt: skip
     (out_dir / "metrics.json").write_text(json.dumps(_clean(metrics), indent=2, sort_keys=True))
     run = {
         "run_id": r.run_id, "git_commit": r.git_commit, "snapshot_hashes": r.snapshot_hashes,
         "config": cfg.model_dump(mode="json"), "fits": _rows(r.fits),
-        "champion_written": r.champion_written,
-        "timings": r.timings,
+        "champion_written": r.champion_written, "timings": r.timings,
         "snapshot_meta": r.snapshot_meta,
     }  # fmt: skip
     (out_dir / "run.json").write_text(json.dumps(_clean(run), indent=2, sort_keys=True))
     _plots(r, out_dir)
 
-    m = r.monthly
-    coverage = "\n".join(_coverage_lines(m, cfg))
-    excluded = _excluded_line(r.snapshot_meta)
-    cand = r.candidates.head(10)
-    chosen = r.chosen
     status = "PASSED" if r.gate.passed else "BLOCKED"
-    lk = r.leakage
-    undelivered_rows = [
-        [u["split"], u["rows"], u["orders"], u["recall_at_k"], u["pr_auc"]]
-        for u in r.undelivered.iter_rows(named=True)
-    ]
-    test_slices = r.slices.filter(pl.col("split") == "test")
-    slice_rows = []
-    for (kind, value), part in sorted(test_slices.group_by(["slice_type", "slice"]),
-                                      key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):  # fmt: skip
-        by = {row["model"]: row for row in part.iter_rows(named=True)}
-        slice_rows.append([kind, value, by["chosen"]["orders"], by["chosen"]["late"],
-                           by["chosen"]["recall_at_k"], by["rule"]["recall_at_k"]])  # fmt: skip
-
+    calendar = "BLOCKED" if not r.calendar_gate.passed else "PASSED (the gate is broken)"
+    run_lines = "\n".join(
+        line for line in [
+            f"- Code commit `{r.git_commit}`; snapshots: decision "
+            f"`{r.snapshot_hashes['decision'][:12]}` (cut {cfg.test_start}), evaluation "
+            f"`{r.snapshot_hashes['evaluation'][:12]}` (cut {cfg.evaluation_cutoff})",
+            f"- Rows: train {r.counts['train']:,} · validation {r.counts['validation']:,} · "
+            f"refit {r.counts['refit']:,} · test {r.counts['test']:,}",
+            _excluded_line(r.snapshot_meta), *_coverage_lines(m, cfg),
+        ] if line
+    )  # fmt: skip
     md = f"""# Training run {r.run_id}
 
 ## Run
 
-- Code commit: `{r.git_commit}`
-- Decision snapshot (train + validation, cut {cfg.test_start}): `{
-        r.snapshot_hashes["decision"][:12]
-    }`
-- Evaluation snapshot (test labels, cut {cfg.evaluation_cutoff}): `{
-        r.snapshot_hashes["evaluation"][:12]
-    }`
-- Rows: train {r.counts["train"]:,} · validation {r.counts["validation"]:,} · refit {
-        r.counts["refit"]:,} · test {r.counts["test"]:,}
-{excluded}
-{coverage}
+{run_lines}
 
 ## Decision
 
-Chosen: **{chosen["model"]}**, {chosen["window_months"]}-month training window
-{"(Platt-calibrated)" if chosen["calibrated"] else "(no calibration)"}.
-
-Gate: **{status}**. Validation numbers below are slightly optimistic: the same
-months were used to pick the model among {r.candidates.height} candidates. The
-test months were never used for any choice and are the real performance.
+Chosen: **{r.chosen["model"]}**, {r.chosen["window_months"]}-month window, best of
+{r.candidates.height} candidates on validation recall@K. Gate: **{status}**.
+Validation numbers are slightly optimistic (the same months picked the model); the
+test months were never used for any choice.
 
 {_gate_section(r.gate, cfg.gate.slice_tolerance)}
 
-{_calibration_line(r.calibration)}
-
-Deliberately weak calendar-only model: **{
-        "PASSED (gate is broken)" if r.calendar_gate.passed else "BLOCKED"
-    }**
-({sum(c.passed is False for c in r.calendar_gate.checks)} of {
-        len(r.calendar_gate.checks)
-    } checks failed).
-
-## Validation candidates
-
-Top {cand.height} of {r.candidates.height} (window x model x settings), by validation recall@K:
-
-{
-        _table(
-            ["Model", "Window", "Recall@K", "PR-AUC", "Brier", "ECE"],
-            [
-                [
-                    c["model"],
-                    c["window_months"],
-                    c["recall_at_k"],
-                    c["pr_auc"],
-                    c["brier"],
-                    c["ece"],
-                ]
-                for c in cand.iter_rows(named=True)
-            ],
-        )
-    }
+Calendar-only model (must be blocked): **{calendar}**.
 
 ## Month by month
 
-Each month against its own late rate. `chosen` is the model refit on train + validation;
-`walk_forward` is retrained before each test month on what was known then (diagnostic only).
+`chosen` is refit on train + validation; `walk_forward` is retrained before each test
+month (diagnostic only).
 
 **Test ({_span(cfg.test_start, cfg.test_end)}, the real performance)**
 
@@ -300,38 +237,17 @@ Each month against its own late rate. `chosen` is the model refit on train + val
 
 ![calibration](reliability.png) ![precision-recall](pr_curve.png)
 
-## Slices
-
-Test months, chosen model vs rule:
-
-{_table(["Slice type", "Slice", "Orders", "Late", "Recall@K chosen", "Recall@K rule"], slice_rows)}
-
-## Never-delivered orders
-
-Orders labeled late only because they never arrived, included vs left out:
-
-{_table(["Split", "Rows", "Orders", "Recall@K", "PR-AUC"], undelivered_rows)}
-
 ## Leakage check
 
-| Split | Late rate | PR-AUC | PR-AUC ÷ late rate | Recall@K |
-| --- | --- | --- | --- | --- |
-| Time (train before, judge after) | {lk["time_late_rate"]:.1%} | {_fmt(lk["time_pr_auc"])} | {
-        _fmt(lk["time_pr_auc_lift"], 2)
-    } | {_fmt(lk["time_recall_at_k"])} |
-| Random 80/20 of the same rows | {lk["random_late_rate"]:.1%} | {_fmt(lk["random_pr_auc"])} | {
-        _fmt(lk["random_pr_auc_lift"], 2)
-    } | {_fmt(lk["random_recall_at_k"])} |
-
-A random split lets the model learn from orders handed off after the ones it is judged
-on, so it looks better than it can be in use; the time split is what the system faces.
-PR-AUC rises with the late rate itself, and the two holdouts have different late rates,
-so compare the PR-AUC ÷ late rate column. Recall@K depends on the late rate and on day
-sizes too, so it is not comparable across the two rows.
+Random 80/20 split of the same rows vs the time split. PR-AUC rises with the late rate,
+so compare it divided by the late rate: random {_fmt(lk["random_pr_auc_lift"], 2)}
+({lk["random_late_rate"]:.1%} late) vs time {_fmt(lk["time_pr_auc_lift"], 2)}
+({lk["time_late_rate"]:.1%} late).
 
 ## Notes
 
 {_budget_note(m, cfg)}
 - Costs (R$2 per contact, R$20 per missed late order) are simulated assumptions.
+- All candidates, slices and never-delivered results: `metrics.json`.
 """
     (out_dir / "report.md").write_text(md)

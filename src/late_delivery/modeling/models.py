@@ -203,41 +203,6 @@ class LightGBMModel:
         return np.asarray(out, dtype=np.float64)
 
 
-class PlattCalibrated:
-    """Fits the base model without the last training month, then a one-feature logistic
-    regression on logit(score) over that month (never on validation)."""
-
-    uses_threshold = True
-
-    def __init__(self, base: Model) -> None:
-        self.base = base
-        self.name = f"{base.name}+platt"
-        self._a, self._b = 1.0, 0.0
-
-    @property
-    def params(self) -> dict[str, Any]:
-        return {**self.base.params, "platt_a": self._a, "platt_b": self._b}
-
-    @staticmethod
-    def _logit(p: np.ndarray) -> np.ndarray:
-        q = np.clip(p, 1e-9, 1 - 1e-9).astype(np.float64)
-        out: np.ndarray = np.log(q / (1 - q))
-        return out
-
-    def fit(self, train: pl.DataFrame) -> None:
-        early, last, _ = _last_month_split(train)
-        if early.height == 0:
-            raise ValueError("Platt calibration needs at least two months of training rows")
-        self.base.fit(early)
-        z = self._logit(self.base.score(last))[:, None]
-        w, b = fit_logreg(z, last["late"].to_numpy().astype(np.float64), l2=1e-6)
-        self._a, self._b = float(w[0]), b
-
-    def score(self, df: pl.DataFrame) -> np.ndarray:
-        z = self._logit(self.base.score(df))[:, None]
-        return predict_proba(z, np.array([self._a]), self._b)
-
-
 def calendar_only(l2: float = 0.01) -> LogRegModel:
     """A deliberately weak model (weekday and month only) the gate must block."""
     m = LogRegModel(l2=l2, features=["handoff_weekday", "handoff_month"])

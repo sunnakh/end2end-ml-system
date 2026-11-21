@@ -9,7 +9,6 @@ from late_delivery.modeling.metrics import roc_auc
 from late_delivery.modeling.models import (
     LightGBMModel,
     LogRegModel,
-    PlattCalibrated,
     RuleBaseline,
     calendar_only,
     load_model,
@@ -83,16 +82,6 @@ def test_unseen_state_scores_without_error() -> None:
     assert np.isfinite(m.score(odd)).all()
 
 
-def test_platt_calibration_fixes_shifted_probabilities() -> None:
-    base = LogRegModel(l2=1e-3)
-    cal = PlattCalibrated(LogRegModel(l2=1e-3))
-    base.fit(TRAIN)
-    cal.fit(TRAIN)
-    s = cal.score(HELD)
-    assert ((s > 0) & (s < 1)).all()
-    assert abs(s.mean() - HELD["late"].mean()) < 0.05  # type: ignore[operator]
-
-
 def test_calendar_only_uses_two_features() -> None:
     m = calendar_only()
     assert m.features == ["handoff_weekday", "handoff_month"]
@@ -134,9 +123,3 @@ def test_lightgbm_final_trees_use_every_training_row() -> None:
     assert m.params["fitted_rows"] == TRAIN.height  # last month is in the trees too
     assert m.params["early_stopping_month"] == "2018-03"
     assert m.num_trees == m.best_iteration
-
-
-def test_platt_needs_more_than_one_month() -> None:
-    one_month = TRAIN.filter(pl.col("handoff_date") >= date(2018, 3, 1))
-    with pytest.raises(ValueError, match="at least two months"):
-        PlattCalibrated(LogRegModel(l2=1e-3)).fit(one_month)

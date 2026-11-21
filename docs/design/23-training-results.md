@@ -6,6 +6,11 @@ minute), after the fixes from the whole-branch review. Decision snapshot
 2018-10-17). Business numbers are simulated (R$2 per contact, R$20 per missed late
 order).
 
+That run compared 48 candidates (12 LightGBM settings). The code was then slimmed
+to 4 LightGBM settings (24 candidates) and Platt calibration was removed; a rerun
+of the slimmed code on the same snapshots chose the same model and produced
+identical validation, gate and month-by-month results (35 s instead of 56 s).
+
 ## Headline
 
 **On the honest test (June–August 2018) the model and the rule baseline are tied:**
@@ -19,9 +24,10 @@ in serving without the follow-up below.
 ## Decision
 
 - **Chosen:** logistic regression (L2 = 1e-4), 9-month window, no calibration
-  (validation ECE 0.015). Validation recall@K 0.266; the best LightGBM (15-month
-  window) scored 0.265. The top candidates are within 0.005 of each other, inside
-  the noise, yet behave very differently on August: validation cannot separate them.
+  (validation ECE 0.015). Validation recall@K 0.266; the best LightGBM scored 0.265
+  in the 48-candidate run (0.262 with the slimmed grid). The top candidates are
+  within 0.005 of each other, inside the noise, yet behave very differently on
+  August: validation cannot separate them.
 - **Gate: passed.** Beats the rule by +0.080 recall@K (95% CI +0.049 to +0.109);
   every slice and calibration check passed; the North (103 orders) was too small
   to judge and is named as such.
