@@ -73,3 +73,32 @@ def test_only_categorical_features() -> None:
     x = dm.transform(df)
     assert x.shape == (80, len(dm.feature_names))
     assert np.isfinite(x).all()
+
+
+def test_little_time_left_flag_added_next_to_remaining_days() -> None:
+    df = pl.DataFrame({"remaining_days": [1.0, 4.9, 5.0, 12.0] * 10})
+    dm = DesignMatrix(["remaining_days"]).fit(df)
+    assert dm.feature_names == ["remaining_days", "remaining_days__under_5"]
+    flag = dm.transform(df)[:4, 1]
+    assert flag[0] == flag[1] > flag[2] == flag[3]  # under 5 days vs 5 or more
+
+
+def test_logreg_learns_a_cliff_it_could_not_draw_as_a_line() -> None:
+    from late_delivery.modeling.logreg import fit_logreg, predict_proba
+    from late_delivery.modeling.metrics import average_precision
+
+    # Late = a step in days left (under 5) plus a smooth effect of another feature. With days
+    # alone, line and step rank orders the same way; the step matters once another feature
+    # competes for the ranking, as state and month do on the real data.
+    rng = np.random.default_rng(0)
+    n = 6000
+    days, other = rng.uniform(0, 30, n), rng.normal(0, 1, n)
+    logit = -2.6 + 3.0 * (days < 5) + 0.8 * other
+    y = (rng.random(n) < 1 / (1 + np.exp(-logit))).astype(float)
+    df = pl.DataFrame({"remaining_days": days, "other": other})
+    dm = DesignMatrix(["remaining_days", "other"]).fit(df)
+    x_step = dm.transform(df)
+    x_line = x_step[:, [dm.feature_names.index("remaining_days"), dm.feature_names.index("other")]]
+    ap_line = average_precision(y, predict_proba(x_line, *fit_logreg(x_line, y, l2=1e-3)))
+    ap_step = average_precision(y, predict_proba(x_step, *fit_logreg(x_step, y, l2=1e-3)))
+    assert ap_step > ap_line + 0.05

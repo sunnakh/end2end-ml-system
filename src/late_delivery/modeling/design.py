@@ -14,6 +14,11 @@ LOG_FEATURES = ["total_price", "total_freight", "total_weight_g", "max_volume_cm
                 "max_distance_km"]  # fmt: skip
 CATEGORICAL = ["customer_state", "main_payment_type", "handoff_weekday", "handoff_month"]
 RARE = "__rare__"
+# Lateness is a step, not a slope, in days left at handoff: in training, orders with under
+# 5 days left are ~66% late and every longer group ~10%. A straight line cannot draw that
+# step, so logistic regression also gets a flag for it.
+CLIFF_DAYS = 5.0
+CLIFF_FLAG = "remaining_days__under_5"
 
 
 def _median(s: pl.Series) -> float:
@@ -27,6 +32,8 @@ class DesignMatrix:
         self.rare_min_count = rare_min_count
         self.categorical = [f for f in features if f in CATEGORICAL]
         self.numeric_names = [f for f in features if f not in CATEGORICAL]
+        if "remaining_days" in self.numeric_names:
+            self.numeric_names.append(CLIFF_FLAG)
         self.medians_: dict[str, float] = {}
         self.with_missing_: list[str] = []
         self.levels_: dict[str, list[str]] = {}
@@ -37,6 +44,9 @@ class DesignMatrix:
     def _numeric_raw(self, df: pl.DataFrame) -> pl.DataFrame:
         exprs = []
         for f in self.numeric_names:
+            if f == CLIFF_FLAG:
+                exprs.append((pl.col("remaining_days") < CLIFF_DAYS).cast(pl.Float64).alias(f))
+                continue
             e = pl.col(f).cast(pl.Float64)
             if f in LOG_FEATURES:
                 e = e.clip(lower_bound=0).log1p()
