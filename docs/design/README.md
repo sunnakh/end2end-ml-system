@@ -35,6 +35,7 @@ Source of truth for what the system does and why. All business numbers are
 20. [Metrics and report](20-metrics-and-report.md)
 21. [Evaluation gate](21-evaluation-gate.md)
 22. [Exit checks](22-training-exit-checks.md)
+23. [Results on real data](23-training-results.md)
 
 ## Added as built
 
