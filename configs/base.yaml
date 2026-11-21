@@ -24,3 +24,22 @@ drift:
   reference_end: 2017-08-31
   window_days: 7      # compare the trailing week, not a single noisy day
   min_rows: 200       # below this, report "too_few_orders" instead of a PSI
+
+training:
+  train_start: 2017-01-01
+  valid_start: 2018-04-01
+  test_start: 2018-06-01         # also the decision snapshot cut-off
+  test_end: 2018-08-31           # inclusive
+  evaluation_cutoff: 2018-10-17  # test labels, once resolved
+  window_months: [15, 9, 6]      # training windows compared on validation
+  budget_share: 0.05             # daily contacts = 5% of the day's handoffs
+  min_score: 0.10                # break-even: contact cost 2 / late cost 20
+  contact_cost: 2.0
+  late_cost: 20.0
+  bootstrap_resamples: 1000
+  seed: 0
+  models_dir: data/models
+  gate:
+    margin: 0.02
+    slice_tolerance: 0.05
+    min_slice_rows: 300
