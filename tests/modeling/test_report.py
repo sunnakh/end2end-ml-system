@@ -78,3 +78,47 @@ def test_budget_note_comes_from_the_numbers() -> None:
     low = _budget_note(monthly(0.021), CFG)
     assert "2018-06 (2.1% late: 297 contacts of 299 allowed)" in low
     assert "at or above" in _budget_note(monthly(0.08), CFG)
+
+
+def test_no_hardcoded_findings_or_dates(written: tuple[ExperimentResult, Path]) -> None:
+    text = (written[1] / "report.md").read_text()
+    for stale in ("0.341 with", "0.325 without", "June–August", "April–May", "winter"):
+        assert stale not in text, stale
+    assert "**Test (2018-06 to 2018-08" in text
+    assert "**Validation (2018-04 to 2018-05" in text
+
+
+def test_new_columns_and_sections(written: tuple[ExperimentResult, Path]) -> None:
+    text = (written[1] / "report.md").read_text()
+    assert "ROC-AUC" in text
+    assert "Calibration:" in text
+    run = json.loads((written[1] / "run.json").read_text())
+    assert run["timings"]["total"] > 0
+
+
+def test_partial_months_are_detected_from_the_numbers() -> None:
+    import polars as pl
+
+    from late_delivery.modeling.report import _coverage_lines
+
+    monthly = pl.DataFrame({
+        "split": ["validation", "validation"], "model": ["chosen", "chosen"],
+        "month": ["2018-04", "2018-05"], "orders": [7000.0, 3278.0],
+        "orders_in_eval_snapshot": [7000, 6981], "mean_promised_days": [23.2, 17.2],
+    })  # fmt: skip
+    lines = _coverage_lines(monthly, CFG)
+    assert len(lines) == 1
+    assert "2018-05" in lines[0] and "3,278 of 6,981" in lines[0] and "17.2" in lines[0]
+
+
+def test_excluded_counts_shown(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    result = run_experiment(CFG, _load, tmp_path, run_id="r1", git_commit="abc", grid=GRID)
+    result = replace(result, snapshot_meta={
+        "decision": {"excluded_not_yet_due": 3837, "late_without_delivery": 1105},
+        "evaluation": {"excluded_not_yet_due": 12, "late_without_delivery": 1160},
+    })  # fmt: skip
+    write_report(result, CFG, tmp_path / "out")
+    text = (tmp_path / "out" / "report.md").read_text()
+    assert "3,837" in text and "1,105" in text

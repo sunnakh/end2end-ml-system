@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -69,12 +69,13 @@ def _monthly_table(monthly: pl.DataFrame, split: str) -> str:
         rows.append([
             r["month"], r["model"], f"{r['late_rate']:.1%}",
             f"{_fmt(r['recall_at_k'])} [{_fmt(r['recall_lo'])}–{_fmt(r['recall_hi'])}]",
-            r["precision_at_k"], r["lift_at_k"], r["pr_auc"], r["brier"],
+            r["precision_at_k"], r["lift_at_k"], r["pr_auc"], r["roc_auc"], r["brier"],
             f"{int(r['contacts'])}/{int(r['budget'])}", f"{r['net_savings']:,.0f}",
             "–" if vs_rule is None else f"{vs_rule:+,.0f}",
         ])  # fmt: skip
     headers = ["Month", "Model", "Late rate", "Recall@K [95% CI]", "Precision@K", "Lift",
-               "PR-AUC", "Brier", "Contacts / budget", "Net R$", "vs rule R$"]  # fmt: skip
+               "PR-AUC", "ROC-AUC", "Brier", "Contacts / budget", "Net R$",
+               "vs rule R$"]  # fmt: skip
     return _table(headers, rows)
 
 
@@ -92,6 +93,54 @@ def _gate_section(g: GateResult, tolerance: float) -> str:
             "Watch these slices in the next run."
         )
     return "\n".join(out)
+
+
+def _span(start: date, end: date) -> str:
+    return f"{start:%Y-%m} to {end:%Y-%m}"
+
+
+def _coverage_lines(monthly: pl.DataFrame, cfg: TrainingConfig) -> list[str]:
+    """Validation months the decision snapshot holds only partly (orders still in transit
+    at its cut-off have no outcome yet), found from the numbers, not from a fixed month."""
+    rows = monthly.filter(
+        (pl.col("split") == "validation") & (pl.col("model") == "chosen")
+        & (pl.col("orders") < pl.col("orders_in_eval_snapshot"))
+    ).sort("month")  # fmt: skip
+    return [
+        f"- {r['month']} is partial in the decision snapshot: {int(r['orders']):,} of "
+        f"{r['orders_in_eval_snapshot']:,} orders (mean promise {r['mean_promised_days']:.1f} "
+        f"days), because orders still in transit on {cfg.test_start} have no outcome yet."
+        for r in rows.iter_rows(named=True)
+    ]
+
+
+def _excluded_line(meta: dict[str, dict[str, Any]]) -> str:
+    parts = []
+    for name in ("decision", "evaluation"):
+        m = meta.get(name) or {}
+        if "excluded_not_yet_due" in m:
+            parts.append(
+                f"{name} snapshot left out {m['excluded_not_yet_due']:,} orders not yet due "
+                f"and labels {m.get('late_without_delivery', 0):,} late without a delivery"
+            )
+    return f"- Label maturity: {'; '.join(parts)}." if parts else ""
+
+
+def _calibration_line(cal: dict[str, Any]) -> str:
+    if not cal:
+        return ""
+    if not cal.get("tried"):
+        return (
+            f"Calibration: not tried (validation ECE {_fmt(cal.get('base_ece'))} "
+            f"<= {cal.get('threshold_ece', 0):.2f})."
+        )
+    verdict = "kept" if cal["kept"] else "not kept"
+    return (
+        f"Calibration: Platt tried and {verdict}: ECE {_fmt(cal['base_ece'])} -> "
+        f"{_fmt(cal['calibrated_ece'])}, recall@K {_fmt(cal['base_recall_at_k'])} -> "
+        f"{_fmt(cal['calibrated_recall_at_k'])}, PR-AUC {_fmt(cal['base_pr_auc'])} -> "
+        f"{_fmt(cal['calibrated_pr_auc'])}."
+    )
 
 
 def _budget_note(monthly: pl.DataFrame, cfg: TrainingConfig) -> str:
@@ -154,21 +203,15 @@ def write_report(result: ExperimentResult, cfg: TrainingConfig, out_dir: Path) -
         "run_id": r.run_id, "git_commit": r.git_commit, "snapshot_hashes": r.snapshot_hashes,
         "config": cfg.model_dump(mode="json"), "fits": _rows(r.fits),
         "champion_written": r.champion_written,
+        "timings": r.timings,
+        "snapshot_meta": r.snapshot_meta,
     }  # fmt: skip
     (out_dir / "run.json").write_text(json.dumps(_clean(run), indent=2, sort_keys=True))
     _plots(r, out_dir)
 
     m = r.monthly
-    may = m.filter((pl.col("month") == "2018-05") & (pl.col("model") == "chosen"))
-    may_line = ""
-    if may.height:
-        row = may.row(0, named=True)
-        may_line = (
-            f"- May is partial in the decision snapshot: {int(row['orders']):,} of "
-            f"{row['orders_in_eval_snapshot']:,} orders (mean promise "
-            f"{row['mean_promised_days']:.1f} days), because orders still in transit on "
-            f"{cfg.test_start} have no outcome yet."
-        )
+    coverage = "\n".join(_coverage_lines(m, cfg))
+    excluded = _excluded_line(r.snapshot_meta)
     cand = r.candidates.head(10)
     chosen = r.chosen
     status = "PASSED" if r.gate.passed else "BLOCKED"
@@ -198,7 +241,8 @@ def write_report(result: ExperimentResult, cfg: TrainingConfig, out_dir: Path) -
     }`
 - Rows: train {r.counts["train"]:,} · validation {r.counts["validation"]:,} · refit {
         r.counts["refit"]:,} · test {r.counts["test"]:,}
-{may_line}
+{excluded}
+{coverage}
 
 ## Decision
 
@@ -210,6 +254,8 @@ months were used to pick the model among {r.candidates.height} candidates. The
 test months were never used for any choice and are the real performance.
 
 {_gate_section(r.gate, cfg.gate.slice_tolerance)}
+
+{_calibration_line(r.calibration)}
 
 Deliberately weak calendar-only model: **{
         "PASSED (gate is broken)" if r.calendar_gate.passed else "BLOCKED"
@@ -244,11 +290,11 @@ Top {cand.height} of {r.candidates.height} (window x model x settings), by valid
 Each month against its own late rate. `chosen` is the model refit on train + validation;
 `walk_forward` is retrained before each test month on what was known then (diagnostic only).
 
-**Test (June–August 2018, the real performance)**
+**Test ({_span(cfg.test_start, cfg.test_end)}, the real performance)**
 
 {_monthly_table(m, "test")}
 
-**Validation (April–May 2018, used for the choice)**
+**Validation ({_span(cfg.valid_start, cfg.test_start - timedelta(days=1))}, used for the choice)**
 
 {_monthly_table(m, "validation")}
 
@@ -268,21 +314,24 @@ Orders labeled late only because they never arrived, included vs left out:
 
 ## Leakage check
 
-| Split | PR-AUC | Recall@K |
-| --- | --- | --- |
-| Time (train before, judge after) | {_fmt(lk["time_pr_auc"])} | {_fmt(lk["time_recall_at_k"])} |
-| Random 80/20 of the same rows | {_fmt(lk["random_pr_auc"])} | {_fmt(lk["random_recall_at_k"])} |
+| Split | Late rate | PR-AUC | PR-AUC ÷ late rate | Recall@K |
+| --- | --- | --- | --- | --- |
+| Time (train before, judge after) | {lk["time_late_rate"]:.1%} | {_fmt(lk["time_pr_auc"])} | {
+        _fmt(lk["time_pr_auc_lift"], 2)
+    } | {_fmt(lk["time_recall_at_k"])} |
+| Random 80/20 of the same rows | {lk["random_late_rate"]:.1%} | {_fmt(lk["random_pr_auc"])} | {
+        _fmt(lk["random_pr_auc_lift"], 2)
+    } | {_fmt(lk["random_recall_at_k"])} |
 
 A random split lets the model learn from orders handed off after the ones it is judged
-on, including the same weeks' conditions, so it looks better than it can be in use;
-the time split is what the system faces. Recall@K is not comparable across the two
-rows: the random holdout mixes in high-late winter weeks and smaller days.
+on, so it looks better than it can be in use; the time split is what the system faces.
+PR-AUC rises with the late rate itself, and the two holdouts have different late rates,
+so compare the PR-AUC ÷ late rate column. Recall@K depends on the late rate and on day
+sizes too, so it is not comparable across the two rows.
 
 ## Notes
 
 {_budget_note(m, cfg)}
 - Costs (R$2 per contact, R$20 per missed late order) are simulated assumptions.
-- `handoff_month` is kept: it carries the overall late-rate level (validation PR-AUC
-  0.341 with vs 0.325 without). The test months were looked at once while checking this.
 """
     (out_dir / "report.md").write_text(md)
