@@ -195,3 +195,14 @@ def test_meta_counts_not_yet_due_exclusions(lake: Settings) -> None:
     meta = _meta(lake, date(2017, 1, 10))
     assert meta["excluded_not_yet_due"] == 4  # o1, o2, o4, o5 handed off, all due after 01-10
     assert meta["rows"] == 0
+
+
+def test_late_without_delivery_column(lake: Settings) -> None:
+    # On 01-15, o2 (due 01-12) is still in transit: late, with no delivery date yet.
+    info = build_training_set(lake, date(2017, 1, 15))
+    df = pl.read_parquet(f"{info.path}/part-0.parquet")
+    flagged = set(df.filter(pl.col("late_without_delivery"))["order_id"])
+    assert flagged == {"o2"}
+    assert df.filter(pl.col("late_without_delivery"))["late"].to_list() == [1]
+    meta = _meta(lake, date(2017, 1, 15))
+    assert df["late_without_delivery"].sum() == meta["late_without_delivery"]
