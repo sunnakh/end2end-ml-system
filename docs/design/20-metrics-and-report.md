@@ -6,9 +6,11 @@ Each handoff day: K = 5% of that day's handoffs, rounded down, at least 1.
 Contact the top K orders by score, but only those with score > 0.10 (break-even
 from the R$2 / R$20 cost ratio). A day may use fewer than K contacts.
 
-In June–July 2018 the late rate (2–3%) is below the 5% budget, so the threshold,
-not the budget, decides how many are contacted. This is expected behaviour and is
-reported as contacts used vs budget per month.
+In June–July 2018 the late rate (2–3%) is below the 5% budget, so even a perfect
+ranking must spend part of the budget on on-time orders. The 0.10 minimum score
+holds contacts back only where predicted risk is low; on real data the models
+still used nearly the whole budget (e.g. 282–297 of 299 in June). The report
+shows contacts used vs budget per month.
 
 ## Metrics (written from scratch, checked against scikit-learn in tests)
 

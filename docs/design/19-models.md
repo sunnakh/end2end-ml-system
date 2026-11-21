@@ -32,8 +32,10 @@ From the [framing](01-framing.md):
 
 ## LightGBM
 
-- Native categorical handling, early stopping on a time-ordered tail of the
-  training rows (the last month of the window), never on validation.
+- Native categorical handling. The number of trees is chosen by early stopping
+  on the last month of the window (never validation); the final trees are then
+  grown on **every** training row with that count, so the newest month is learned
+  from too. The model stores the feature list it was fitted with.
 - Tuned on validation from a small grid: number of leaves, learning rate,
   minimum child samples.
 - Class weights off: the decision needs calibrated probabilities for the 0.10

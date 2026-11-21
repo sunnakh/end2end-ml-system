@@ -39,3 +39,13 @@ snapshot: 4–5% in mid-2017, 11–13% in Nov 2017–Feb 2018, **22% in March 20
 7% in April–May, **2% in June 2018** (promises stretched), 3% in July and 10%
 in August (promises cut). Metrics such as precision@K depend on the base rate,
 so M3 compares months against their own base rate, not one global number.
+
+## Follow-up after M3: why the model fails in August 2018 (post-hoc)
+
+The M3 model beats the rule in June–July 2018 but loses in August (recall@K
+0.186 vs 0.250), when promises were cut to ~15 days; monthly retraining does not
+fix it, and validation (April–May, old policy) could not tell the candidates
+apart. A diagnostic should find why (likely: promise-length features outside
+the range seen in training). Any change chosen by looking at June–August makes
+them no longer a clean test, and the data has no later months, so the result
+must be labelled **post-hoc** and kept separate from the M3 numbers.
