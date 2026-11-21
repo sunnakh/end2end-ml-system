@@ -63,9 +63,7 @@ def render_airflow_dag(
             f"        bash_command={command!r},",
             "    )",
         ]
-    lines += [
-        f'    tasks["{dep}"] >> tasks["{s.name}"]' for s in ordered for dep in s.depends_on
-    ]
+    lines += [f'    tasks["{dep}"] >> tasks["{s.name}"]' for s in ordered for dep in s.depends_on]
     return "\n".join(lines) + "\n"
 
 
@@ -73,9 +71,7 @@ def render_for_project(settings: Settings) -> str:
     """The DAG for this project's configured replay range."""
     from late_delivery.dag import STEPS
 
-    return render_airflow_dag(
-        STEPS, DAG_ID, start=settings.replay.start, end=settings.replay.end
-    )
+    return render_airflow_dag(STEPS, DAG_ID, start=settings.replay.start, end=settings.replay.end)
 
 
 def main() -> None:
