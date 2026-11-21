@@ -130,7 +130,8 @@ def _seller_handling_history(
             _hours(HANDOFF, pl.coalesce(APPROVED, PURCHASE)).alias("_handling_h"),
         )
         .drop_nulls()
-        .unique("order_id", keep="first")
+        .sort("_handoff_ts")
+        .unique("order_id", keep="first", maintain_order=True)  # earliest handoff per order
         .join(all_items.select("order_id", "seller_id").unique(), on="order_id")
         .sort("_handoff_ts")
     )

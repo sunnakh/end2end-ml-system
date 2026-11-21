@@ -300,3 +300,14 @@ def test_seller_median_handling_two_sellers_takes_max() -> None:
     log = _shipped(("old1", "2017-03-01 10:00:00", 10.0), ("old2", "2017-03-01 10:00:00", 40.0))
     f = _features(HANDOFF_0303, log, items)
     assert f["seller_prior_median_handling_h"] == pytest.approx(40.0)
+
+
+def test_seller_median_uses_earliest_shipped_event_per_order() -> None:
+    # The same order shipped twice in the log (a correction), listed latest first:
+    # the handoff that counts is the earliest one, whatever the file order.
+    log = pl.concat([
+        _shipped(("old1", "2017-03-02 10:00:00", 99.0)),
+        _shipped(("old1", "2017-03-01 10:00:00", 10.0)),
+    ])  # fmt: skip
+    f = _features(HANDOFF_0303, log, MEDIAN_ITEMS)
+    assert f["seller_prior_median_handling_h"] == pytest.approx(10.0)
