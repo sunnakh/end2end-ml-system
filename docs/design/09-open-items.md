@@ -45,7 +45,19 @@ so M3 compares months against their own base rate, not one global number.
 The M3 model beats the rule in June–July 2018 but loses in August (recall@K
 0.186 vs 0.250), when promises were cut to ~15 days; monthly retraining does not
 fix it, and validation (April–May, old policy) could not tell the candidates
-apart. A diagnostic should find why (likely: promise-length features outside
-the range seen in training). Any change chosen by looking at June–August makes
-them no longer a clean test, and the data has no later months, so the result
-must be labelled **post-hoc** and kept separate from the M3 numbers.
+apart. Any change chosen by looking at June–August makes them no longer a clean
+test, and the data has no later months, so the result is labelled **post-hoc**
+and kept separate from the M3 numbers.
+
+**Done (post-hoc).** Cause: lateness is a step in days left at handoff, not a
+slope. Orders with under 5 days left are ~66% late in training and ~26% in
+August; every longer group is ~10% in training and ≤5% in August. Logistic
+regression models days left as a straight line, so it barely used it, and state
+and month dominated. Under the old policy few orders were near the step (10th
+percentile ~10 days left), so validation could not show the gap; August's short
+promises put 19% of orders, and 68% of its late orders, under 5 days. Trees draw
+steps natively, which is why LightGBM did well in August.
+
+Fix: a 0/1 "under 5 days left" flag next to `remaining_days` for logistic
+regression (threshold read from training alone). Results in
+[Results on real data](23-training-results.md#august-check-post-hoc).

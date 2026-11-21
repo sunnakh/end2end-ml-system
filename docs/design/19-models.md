@@ -25,6 +25,11 @@ From the [framing](01-framing.md):
   median-imputed with a missing-indicator where nulls occur (seller history),
   heavy-tailed ones log-transformed (price, freight, weight, volume, distance),
   then standardised; categorical features one-hot with a rare-level bucket.
+- **"Under 5 days left" flag:** lateness is a step, not a slope, in days left at
+  handoff (training: ~66% late under 5 days, ~10% for every longer group). A
+  straight line cannot draw a step, so `remaining_days` gets a companion 0/1 flag
+  for `< 5`. The threshold is read from training data alone. Added after the
+  post-hoc August check (see [Open items](09-open-items.md)).
 - Checks: a numerical gradient check, and coefficients and predictions matching
   scikit-learn's `LogisticRegression` on the same design matrix within a small
   tolerance.

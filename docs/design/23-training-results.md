@@ -65,6 +65,43 @@ in serving without the follow-up below.
 - **Label maturity:** the decision snapshot left out 3,837 orders not yet due; May
   validation holds 3,278 of 6,981 orders (short promises), as decided.
 
+## August check (post-hoc)
+
+After the results above, August was examined to find why the model lost there
+(details in [Open items](09-open-items.md)). Everything in this section is
+**post-hoc**: June–August were used to find the cause, so they are no longer a
+clean test, and the data has no later months to retest on.
+
+- **Cause:** lateness is a step at under 5 days left at handoff. The logistic
+  regression drew it as a straight line, and in August spent most of its budget
+  on orders with 5–20 days left (265 contacts, 33 late) while contacting only 69
+  of the 1,331 orders under 5 days left (63 of them late).
+- **Fix:** a 0/1 "under 5 days left" flag for logistic regression.
+
+| Logistic regression | Validation recall@K | Validation PR-AUC | Jun | Jul | Aug |
+| --- | --- | --- | --- | --- | --- |
+| Without the flag | 0.266 | 0.341 | 0.364 | 0.259 | 0.186 |
+| With the flag | 0.258 | 0.355 | 0.364 | 0.263 | **0.338** |
+
+The flag costs nothing on validation beyond noise and fixes the August failure
+(rule: 0.250).
+
+**Rerunning the normal experiment with the flag** (all choices still on
+validation) picks LightGBM (15 leaves, learning rate 0.03, 15-month window,
+validation recall@K 0.262); the gate passes at +0.076 vs the rule. Post-hoc test:
+
+| Month | Model | Rule | Walk-forward |
+| --- | --- | --- | --- |
+| Jun 2018 | 0.341 | 0.202 | – |
+| Jul 2018 | 0.293 | 0.195 | 0.302 |
+| Aug 2018 | 0.394 | 0.250 | 0.394 |
+| **Jun–Aug** | **0.362** (R$4,470) | 0.230 (R$2,024) | |
+
+The choice among the top candidates is still fragile: they sit within noise on
+validation, and the flag's small dip in logistic regression's recall flipped the
+winner to LightGBM, which handles the step natively. Validation still cannot
+show how a candidate behaves under the new promise policy.
+
 ## Fixed during the whole-branch review
 
 - LightGBM read its feature list from the current code, so the stored champion
