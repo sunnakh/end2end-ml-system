@@ -37,6 +37,10 @@ Source of truth for what the system does and why. All business numbers are
 22. [Exit checks](22-training-exit-checks.md)
 23. [Results on real data](23-training-results.md)
 
+## Cross-cutting
+
+24. [Logging and prediction tracing](24-logging-and-tracing.md)
+
 ## Added as built
 
 Tracking and packaging (M4) ·
