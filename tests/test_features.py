@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 import pytest
@@ -30,6 +30,12 @@ def _handoffs(*rows: tuple[str, str, str]) -> pl.DataFrame:
     )  # fmt: skip
 
 
+_NO_ORDER_TS = [
+    pl.lit(None, dtype=TS).alias(c)
+    for c in ("order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date")
+]
+
+
 def _deliveries(*rows: tuple[str, str, str]) -> pl.DataFrame:
     """rows: (order_id, delivered_ts, estimated_ts) as changelog 'delivered' events."""
     return pl.DataFrame(
@@ -43,7 +49,7 @@ def _deliveries(*rows: tuple[str, str, str]) -> pl.DataFrame:
         schema={"order_id": pl.String, "order_delivered_customer_date": TS,
                 "order_estimated_delivery_date": TS, "_change_type": pl.String,
                 "_change_ts": TS},
-    )  # fmt: skip
+    ).with_columns(_NO_ORDER_TS)  # fmt: skip
 
 
 def _items(*rows: tuple[str, str, str]) -> pl.DataFrame:
@@ -100,6 +106,8 @@ def test_columns() -> None:
         PAYMENTS, CUSTOMERS, SELLERS, PRODUCTS, GEO,
     )  # fmt: skip
     assert out.columns == ["order_id", "order_delivered_carrier_date", *FEATURE_COLUMNS]
+    assert len(FEATURE_COLUMNS) == 20
+    assert FEATURE_COLUMNS[-1] == "seller_prior_median_handling_h"
 
 
 def test_seller_history_excludes_delivery_after_handoff() -> None:
@@ -184,7 +192,7 @@ def _changelog(*rows: tuple[str, str, str | None, str]) -> pl.DataFrame:
         },
         schema={"order_id": pl.String, "_change_type": pl.String, "_change_ts": TS,
                 "order_delivered_customer_date": TS, "order_estimated_delivery_date": TS},
-    )  # fmt: skip
+    ).with_columns(_NO_ORDER_TS)  # fmt: skip
 
 
 HANDOFF_0303 = _handoffs(("cur", "c", "2017-03-03 10:00:00"))
@@ -235,3 +243,71 @@ def test_mixed_history_rate() -> None:
     f = _features(HANDOFF_0303, log, HISTORY_ITEMS)
     assert f["seller_prior_orders"] == 2
     assert f["seller_prior_late_rate"] == 0.5
+
+
+def _shipped(*rows: tuple[str, str, float]) -> pl.DataFrame:
+    """rows: (order_id, handoff_ts, handling hours) as changelog 'shipped' events."""
+    handoff = [_dt(r[1]) for r in rows]
+    approved = [h - timedelta(hours=r[2]) for h, r in zip(handoff, rows, strict=True)]
+    return pl.DataFrame(
+        {
+            "order_id": [r[0] for r in rows],
+            "_change_type": ["shipped"] * len(rows),
+            "_change_ts": handoff,
+            "order_purchase_timestamp": [a - timedelta(hours=1) for a in approved],
+            "order_approved_at": approved,
+            "order_delivered_carrier_date": handoff,
+            "order_delivered_customer_date": [None] * len(rows),
+            "order_estimated_delivery_date": [_dt("2017-04-30 00:00:00")] * len(rows),
+        },
+        schema={"order_id": pl.String, "_change_type": pl.String, "_change_ts": TS,
+                **{c: TS for c in ("order_purchase_timestamp", "order_approved_at",
+                                   "order_delivered_carrier_date",
+                                   "order_delivered_customer_date",
+                                   "order_estimated_delivery_date")}},
+    )  # fmt: skip
+
+
+MEDIAN_ITEMS = _items(
+    *[(o, "s1", "p") for o in ("old1", "old2", "old3", "later", "cur")], ("cur2", "s2", "p")
+)
+
+
+def test_seller_median_handling_uses_only_earlier_handoffs() -> None:
+    log = _shipped(
+        ("old1", "2017-03-01 10:00:00", 10.0),
+        ("old2", "2017-03-02 10:00:00", 20.0),
+        ("old3", "2017-03-02 12:00:00", 60.0),
+        ("later", "2017-03-04 10:00:00", 1000.0),
+    )
+    f = _features(HANDOFF_0303, log, MEDIAN_ITEMS)
+    assert f["seller_prior_median_handling_h"] == pytest.approx(20.0)
+
+
+def test_seller_median_handling_excludes_exact_same_ts() -> None:
+    log = _shipped(("old1", "2017-03-01 10:00:00", 10.0), ("old2", "2017-03-03 10:00:00", 99.0))
+    f = _features(HANDOFF_0303, log, MEDIAN_ITEMS)
+    assert f["seller_prior_median_handling_h"] == pytest.approx(10.0)
+
+
+def test_seller_median_handling_null_without_history() -> None:
+    f = _features(HANDOFF_0303, _shipped(("later", "2017-03-04 10:00:00", 5.0)), MEDIAN_ITEMS)
+    assert f["seller_prior_median_handling_h"] is None
+
+
+def test_seller_median_handling_two_sellers_takes_max() -> None:
+    items = _items(("old1", "s1", "p"), ("old2", "s2", "p"), ("cur", "s1", "p"), ("cur", "s2", "p"))
+    log = _shipped(("old1", "2017-03-01 10:00:00", 10.0), ("old2", "2017-03-01 10:00:00", 40.0))
+    f = _features(HANDOFF_0303, log, items)
+    assert f["seller_prior_median_handling_h"] == pytest.approx(40.0)
+
+
+def test_seller_median_uses_earliest_shipped_event_per_order() -> None:
+    # The same order shipped twice in the log (a correction), listed latest first:
+    # the handoff that counts is the earliest one, whatever the file order.
+    log = pl.concat([
+        _shipped(("old1", "2017-03-02 10:00:00", 99.0)),
+        _shipped(("old1", "2017-03-01 10:00:00", 10.0)),
+    ])  # fmt: skip
+    f = _features(HANDOFF_0303, log, MEDIAN_ITEMS)
+    assert f["seller_prior_median_handling_h"] == pytest.approx(10.0)

@@ -39,3 +39,44 @@ snapshot: 4–5% in mid-2017, 11–13% in Nov 2017–Feb 2018, **22% in March 20
 7% in April–May, **2% in June 2018** (promises stretched), 3% in July and 10%
 in August (promises cut). Metrics such as precision@K depend on the base rate,
 so M3 compares months against their own base rate, not one global number.
+
+## Follow-up after M3: why the model fails in August 2018 (post-hoc)
+
+The M3 model beats the rule in June–July 2018 but loses in August (recall@K
+0.186 vs 0.250), when promises were cut to ~15 days; monthly retraining does not
+fix it, and validation (April–May, old policy) could not tell the candidates
+apart. Any change chosen by looking at June–August makes them no longer a clean
+test, and the data has no later months, so the result is labelled **post-hoc**
+and kept separate from the M3 numbers.
+
+**Done (post-hoc).** Cause: lateness is a step in days left at handoff, not a
+slope. Orders with under 5 days left are ~66% late in training and ~26% in
+August; every longer group is ~10% in training and ≤5% in August. Logistic
+regression models days left as a straight line, so it barely used it, and state
+and month dominated. Under the old policy few orders were near the step (10th
+percentile ~10 days left), so validation could not show the gap; August's short
+promises put 19% of orders, and 68% of its late orders, under 5 days. Trees draw
+steps natively, which is why LightGBM did well in August.
+
+Fix: a 0/1 "under 5 days left" flag next to `remaining_days` for logistic
+regression (threshold read from training alone). Results in
+[Results on real data](23-training-results.md#august-check-post-hoc).
+
+## Open in M4: promoting the August fix
+
+The official run with the flag (`20261121T110611Z-f0e249b`) was blocked on
+"beats champion": on April–May it ties the current champion (−0.004), so the
+champion stays the model that loses August to the rule. Validation cannot see
+the policy change, so the gate cannot settle this.
+
+Decision: the gate is not loosened and `champion.json` is not edited by hand.
+M4 adds a manual promotion, built with the model registry:
+
+- `promote <run_id> --reason "…"`: refused unless the run exists, its model
+  loads, its snapshots match, and it passed every gate check except "beats
+  champion"; a reason is required.
+- The champion record keeps `promoted_by: manual`, the reason, the previous
+  champion and the time; every change of champion, automatic or manual, is
+  appended to a promotions log.
+- Candidate reason for this run: the post-hoc August check (0.394 vs 0.186),
+  labelled post-hoc.

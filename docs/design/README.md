@@ -27,7 +27,17 @@ Source of truth for what the system does and why. All business numbers are
 15. [Exit checks](15-pipeline-exit-checks.md)
 16. [Results on real data](16-pipeline-results.md)
 
+## Training and evaluation (M3)
+
+17. [Overview](17-training-overview.md)
+18. [Data and splits](18-training-data-and-splits.md)
+19. [Models](19-models.md)
+20. [Metrics and report](20-metrics-and-report.md)
+21. [Evaluation gate](21-evaluation-gate.md)
+22. [Exit checks](22-training-exit-checks.md)
+23. [Results on real data](23-training-results.md)
+
 ## Added as built
 
-Training and evaluation (M3) · Tracking and packaging (M4) ·
+Tracking and packaging (M4) ·
 Serving, monitoring and deployment (M5).

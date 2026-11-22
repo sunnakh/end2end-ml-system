@@ -65,9 +65,12 @@ def build_training_set(settings: Settings, cutoff: date) -> PartitionInfo:
     # Late because the promised date passed with no delivery yet (in transit or lost).
     # Reported so evaluation can compare results with and without them.
     undelivered = state.filter(pl.col(DELIVERED).is_null()).select("order_id")
-    late_without_delivery = (
-        training.filter(pl.col("late") == 1).join(undelivered, on="order_id").height
+    training = training.with_columns(
+        ((pl.col("late") == 1) & pl.col("order_id").is_in(undelivered["order_id"].implode())).alias(
+            "late_without_delivery"
+        )
     )
+    late_without_delivery = int(training["late_without_delivery"].sum())
 
     digest = content_hash(training, ["order_id"])
     path = f"{settings.paths.data_root}/gold/training/snapshot={digest[:12]}"

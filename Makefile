@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: setup test lint format typecheck check pipeline rerun training-set airflow-dag data
+.PHONY: setup test lint format typecheck check pipeline rerun training-set train airflow-dag data
 
 setup:
 	uv sync
@@ -32,6 +32,10 @@ rerun:
 
 training-set:
 	uv run late-delivery training-set --cutoff $(CUTOFF)
+
+# M3: train, evaluate, gate and write the report to data/models/runs/<run_id>/.
+train:
+	uv run late-delivery train $(if $(RUN_ID),--run-id $(RUN_ID))
 
 airflow-dag:
 	uv run python -m late_delivery.platform.pipeline.airflow > pipelines/airflow_dag.py

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,34 @@ class DriftConfig(_Strict):
     min_rows: int = Field(default=200, ge=0)
 
 
+class GateConfig(_Strict):
+    margin: float = Field(default=0.02, ge=0.0)  # recall@K a challenger must add
+    slice_tolerance: float = Field(default=0.05, ge=0.0)  # worst allowed drop on any slice
+    min_slice_rows: int = Field(default=300, ge=1)  # smaller slices are too noisy to judge
+
+
+class TrainingConfig(_Strict):
+    # Splits by handoff date; the decision snapshot is cut at test_start.
+    train_start: date = date(2017, 1, 1)
+    valid_start: date = date(2018, 4, 1)
+    test_start: date = date(2018, 6, 1)
+    test_end: date = date(2018, 8, 31)  # inclusive
+    evaluation_cutoff: date = date(2018, 10, 17)  # test labels, once they have resolved
+    # At least 2 months: early stopping and calibration hold out the last month of a window.
+    window_months: list[Annotated[int, Field(ge=2)]] = Field(
+        default_factory=lambda: [15, 9, 6], min_length=1
+    )
+    # Daily contact decision (simulated costs, see design 03).
+    budget_share: float = Field(default=0.05, gt=0.0, le=1.0)
+    min_score: float = Field(default=0.10, ge=0.0, le=1.0)
+    contact_cost: float = Field(default=2.0, ge=0.0)
+    late_cost: float = Field(default=20.0, ge=0.0)
+    bootstrap_resamples: int = Field(default=1000, ge=1)
+    seed: int = 0
+    models_dir: str = "data/models"
+    gate: GateConfig = GateConfig()
+
+
 class Settings(_Strict):
     paths: PathsConfig
     replay: ReplayConfig
@@ -55,6 +83,7 @@ class Settings(_Strict):
     validation: ValidationConfig = ValidationConfig()
     faults: FaultsConfig = FaultsConfig()
     drift: DriftConfig
+    training: TrainingConfig = TrainingConfig()
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
