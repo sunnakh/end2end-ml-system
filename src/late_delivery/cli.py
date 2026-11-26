@@ -6,8 +6,10 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import subprocess
 import sys
+import time
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -18,13 +20,12 @@ from late_delivery.config import Settings, load_settings
 from late_delivery.dag import DOWNSTREAM_OF_HISTORY, STEPS
 from late_delivery.modeling.experiment import Snapshot, run_experiment
 from late_delivery.modeling.report import write_report
+from late_delivery.platform.logs import log_event, run_log
 from late_delivery.platform.pipeline.manifest import write_manifest
 from late_delivery.platform.pipeline.runner import new_context, run_steps
 from late_delivery.platform.storage import list_partitions
 from late_delivery.source.simulator import RAW_FILES
 from late_delivery.steps import build_training_set
-
-log = logging.getLogger("late_delivery.cli")
 
 
 @lru_cache(maxsize=4)
@@ -43,11 +44,20 @@ def raw_hashes(settings: Settings) -> dict[str, str]:
 
 def _run_day(settings: Settings, ds: date, only: list[str] | None = None) -> bool:
     ctx = new_context(settings, ds)
-    result = run_steps(STEPS, ctx, only=only)
-    write_manifest(ctx, result, raw_hashes(settings))
-    if not result.ok:
-        log.error("day %s failed at %s: %s", ds, result.failed_step, result.error)
-    return result.ok
+    with run_log(
+        f"{ctx.root}/manifests/{ctx.run_id}.log.jsonl",
+        component="pipeline",
+        run_id=ctx.run_id,
+        ds=ds.isoformat(),
+        secret=os.environ.get(settings.pii.salt_env, ""),
+    ):
+        started = time.perf_counter()
+        log_event("day_started", steps=only if only is not None else [s.name for s in STEPS])
+        result = run_steps(STEPS, ctx, only=only)
+        write_manifest(ctx, result, raw_hashes(settings))
+        if result.ok:
+            log_event("day_finished", seconds=round(time.perf_counter() - started, 3))
+        return result.ok
 
 
 def backfill(settings: Settings, start: date, end: date) -> bool:
@@ -103,20 +113,43 @@ def train(settings: Settings, run_id: str | None, models_dir: Path | None) -> bo
     """Builds the snapshots the experiment asks for, runs it and writes the report."""
 
     def load_snapshot(cutoff: date) -> Snapshot:
+        started = time.perf_counter()
         info = build_training_set(settings, cutoff)
         frame = pl.read_parquet(f"{info.path}/part-0.parquet")
         meta_path = Path(info.path) / "_meta.json"
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        log_event(
+            "snapshot_loaded",
+            cutoff=cutoff.isoformat(),
+            rows=frame.height,
+            content_hash=info.content_hash,
+            seconds=round(time.perf_counter() - started, 3),
+        )
         return Snapshot(frame=frame, content_hash=info.content_hash, meta=meta)
 
     commit = git_commit()
     run_id = run_id or default_run_id(commit)
     root = models_dir or Path(settings.training.models_dir)
-    result = run_experiment(
-        settings.training, load_snapshot, root, run_id=run_id, git_commit=commit
-    )
     out_dir = root / "runs" / run_id
-    write_report(result, settings.training, out_dir)
+    with run_log(
+        str(out_dir / "train.log.jsonl"),
+        component="training",
+        run_id=run_id,
+        secret=os.environ.get(settings.pii.salt_env, ""),
+    ):
+        started = time.perf_counter()
+        log_event(
+            "run_started",
+            git_commit=commit,
+            decision_cutoff=settings.training.test_start.isoformat(),
+            evaluation_cutoff=settings.training.evaluation_cutoff.isoformat(),
+        )
+        result = run_experiment(
+            settings.training, load_snapshot, root, run_id=run_id, git_commit=commit
+        )
+        write_report(result, settings.training, out_dir)
+        log_event("report_written", report="report.md")
+        log_event("run_finished", seconds=round(time.perf_counter() - started, 3))
     status = "PASSED (champion updated)" if result.gate.passed else "BLOCKED (champion kept)"
     print(f"run {run_id}: {result.chosen['model']} — gate {status}")
     print(f"report: {out_dir / 'report.md'}")

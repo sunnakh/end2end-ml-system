@@ -38,6 +38,20 @@ def test_backfill_runs_all_days_with_manifests(mini_olist: Path, tmp_path: Path)
     manifests = _manifests(tmp_path / "lake")
     assert len(manifests) == (LAST_DAY - FIRST_DAY).days + 1
     assert all(m["ok"] for m in manifests)
+    logs = {
+        p.name.removesuffix(".log.jsonl"): p
+        for p in (tmp_path / "lake" / "manifests").glob("*.log.jsonl")
+    }
+    assert set(logs) == {m["run_id"] for m in manifests}
+    for m in manifests:
+        events = [json.loads(line) for line in logs[m["run_id"]].read_text().splitlines()]
+        assert [e["event"] for e in events] == [
+            "day_started",
+            *(["step_finished"] * len(m["steps"])),
+            "day_finished",
+        ]
+        assert [e["step"] for e in events[1:-1]] == m["steps"]
+        assert all(e["run_id"] == m["run_id"] and e["ds"] == m["ds"] for e in events)
     assert {m["ds"] for m in manifests} == {
         f"2017-01-{d:02d}" for d in range(FIRST_DAY.day, LAST_DAY.day + 1)
     }
@@ -127,6 +141,14 @@ def test_missing_landing_fails_ingest(mini_olist: Path, tmp_path: Path) -> None:
     assert not run_step(s, "ingest_bronze", date(2017, 1, 9))
     failed = _manifests(tmp_path / "lake")[-1]
     assert failed["ok"] is False and "FileNotFoundError" in failed["error"]
+    path = tmp_path / "lake" / "manifests" / f"{failed['run_id']}.log.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [e["event"] for e in events] == ["day_started", "step_failed"]
+    failure = events[-1]
+    assert failure["step"] == failed["failed_step"] == "ingest_bronze"
+    assert failure["level"] == "ERROR" and failure["error_type"] == "FileNotFoundError"
+    assert "no landing files" in failure["error"]
+    assert "in ingest_bronze" in failure["traceback"] and "in run_steps" in failure["traceback"]
 
 
 def test_reconciliation_landing_eq_silver_plus_quarantine_plus_dupes(

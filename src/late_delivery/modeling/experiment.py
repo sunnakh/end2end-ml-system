@@ -10,7 +10,7 @@ from __future__ import annotations
 import itertools
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,7 @@ from late_delivery.modeling.models import (
     save_model,
 )
 from late_delivery.modeling.splits import between, months_back, prepare
+from late_delivery.platform.logs import log_event
 
 
 def _default_lgbm() -> list[dict[str, float]]:
@@ -223,10 +224,20 @@ def run_experiment(
     for window in cfg.window_months:
         train = between(df, months_back(cfg.valid_start, window), cfg.valid_start)
         for spec in specs:
+            fit_started = time.perf_counter()
             model = run.fit(spec.build(cfg.seed), train, "candidate", cfg.test_start)
             decided = run.decide(model, valid)
             m = run.metrics(decided, probabilities=True)
             rows.append({"model": spec.label(), "kind": spec.kind, "window_months": window, **m})
+            log_event(
+                "candidate_scored",
+                model=spec.label(),
+                settings=spec.params,
+                window_months=window,
+                recall_at_k=m["recall_at_k"],
+                pr_auc=m["pr_auc"],
+                seconds=round(time.perf_counter() - fit_started, 3),
+            )
             fitted[(spec.label(), window)] = (spec, model, decided, train)
     candidates = pl.DataFrame(rows).sort(
         ["recall_at_k", "pr_auc", "model", "window_months"], descending=[True, True, False, False]
@@ -235,6 +246,7 @@ def run_experiment(
     spec, model, chosen_valid, chosen_train = fitted[(best["model"], best["window_months"])]
     window = int(best["window_months"])
 
+    log_event("model_chosen", model=spec.label(), window_months=window)
     lap("candidates")
 
     # 2. Gate on validation: vs the rule, vs the champion's train-only model, and the
@@ -250,12 +262,14 @@ def run_experiment(
         )
     train_late_rate = float(chosen_train["late"].mean())  # type: ignore[arg-type]
     gate = run_gate(chosen_valid, references, cfg=cfg, train_late_rate=train_late_rate)
+    log_event("gate_checked", **asdict(gate))
     weak = run.fit(calendar_only(), chosen_train, "calendar_only", cfg.test_start)
     calendar_gate = run_gate(
         run.decide(weak, valid), {"rule": rule_valid, "champion": chosen_valid},
         cfg=cfg, train_late_rate=train_late_rate,
     )  # fmt: skip
 
+    log_event("calendar_check", **asdict(calendar_gate))
     lap("gate")
 
     # 3. Refit on train + validation (same window length), score the test months.
@@ -371,6 +385,7 @@ def run_experiment(
             ),
         )
 
+    log_event("champion_written" if gate.passed else "champion_kept")
     timings["total"] = round(time.perf_counter() - started, 2)
     return ExperimentResult(
         run_id=run_id,

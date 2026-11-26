@@ -17,11 +17,15 @@ Two questions must be answerable without rerunning anything:
 
 | Part | Durable record | Event log |
 | --- | --- | --- |
-| Pipeline | `manifests/<run_id>.json`, drift reports | One JSON line per step, to the terminal only; a failure keeps `Type: message`, not the traceback |
-| Training | `report.md`, `metrics.json`, `run.json` (written only on success) | Two `print` lines at the end |
+| Pipeline | `manifests/<run_id>.json`, drift reports | `manifests/<run_id>.log.jsonl` records the day and each step |
+| Training | `report.md`, `metrics.json`, `run.json` | `runs/<run_id>/train.log.jsonl` records snapshots, candidates, gate checks and the champion decision |
 | Serving | not built | not built |
 
-Records are strong; the event trail is missing, and nothing survives a crash.
+Each event is flushed as it happens. A failed step ends with `step_failed`;
+an exception that escapes the run ends with `run_failed`. After an abrupt
+process exit, the last flushed event shows how far the run got.
+Tracebacks include frame locations. Error details from data libraries are
+withheld when they could include input values.
 
 ## Goals
 
@@ -158,8 +162,7 @@ logged as an artifact, so the log travels with the model.
 
 ## Phases
 
-1. **Now (own branch, before M4):** `platform/logs.py`; pipeline and training
-   write event logs; pipeline failures keep the traceback.
+1. **Implemented before M4.** Pipeline and training write run-scoped event logs.
 2. **M4:** MLflow run tagged with `run_id`, log file stored as an artifact.
 3. **M5:** prediction table and API request events.
 

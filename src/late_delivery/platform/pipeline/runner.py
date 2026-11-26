@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -11,9 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 from late_delivery.config import Settings
+from late_delivery.platform.logs import log_event
 from late_delivery.platform.storage import PartitionInfo
-
-log = logging.getLogger("late_delivery.platform.pipeline")
 
 
 @dataclass
@@ -78,10 +75,6 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _log(ctx: Context, step: str, **fields: object) -> None:
-    log.info(json.dumps({"run_id": ctx.run_id, "ds": str(ctx.ds), "step": step, **fields}))
-
-
 def run_steps(steps: list[Step], ctx: Context, only: list[str] | None = None) -> RunResult:
     started = _now()
     ran: list[str] = []
@@ -93,8 +86,13 @@ def run_steps(steps: list[Step], ctx: Context, only: list[str] | None = None) ->
             step.fn(ctx)
         except Exception as exc:  # reported in the result and the manifest
             error = f"{type(exc).__name__}: {exc}"
-            _log(ctx, step.name, status="failed", error=error)
+            log_event(
+                "step_failed",
+                step=step.name,
+                failure=exc,
+                seconds=round(time.perf_counter() - t0, 3),
+            )
             return RunResult(ctx.run_id, False, ran, step.name, error, started, _now())
         ran.append(step.name)
-        _log(ctx, step.name, status="ok", seconds=round(time.perf_counter() - t0, 3))
+        log_event("step_finished", step=step.name, seconds=round(time.perf_counter() - t0, 3))
     return RunResult(ctx.run_id, True, ran, None, None, started, _now())
